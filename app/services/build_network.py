@@ -58,7 +58,7 @@ def check(submission):
         raise ValueError(f"not a Survey123 submission; got keys {sorted(submission)}") from missing
     if fields.get("field_2") not in ("WaterCAD", "SewerCAD"):
         raise ValueError(f"field_2 must be WaterCAD or SewerCAD, got {fields.get('field_2')!r}")
-    return fields, utm_epsg(fields.get("munc_pio"))
+    return fields, utm_epsg(fields.get("munic_pio"))
 
 def run(submission):
     """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
