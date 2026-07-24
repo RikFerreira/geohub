@@ -6,10 +6,13 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from app import config
+from app.routers import build_network
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
+
+app.include_router(build_network.router)
 
 
 @app.get("/health", tags=["ops"])
