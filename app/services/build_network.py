@@ -66,13 +66,16 @@ def run(submission):
 
     # 2: get the xlsx from the feature attachment and save it to a temp file
     from arcgis.features import FeatureLayer  # deferred: seconds to import
+    from arcgis.gis import GIS
 
-    # ponytail: anonymous GIS, the survey layer is public. Pass credentials
-    # to GIS() if it ever gets secured. Survey123 answers live in layer 0.
-    layer = FeatureLayer(f"{submission['surveyInfo']['serviceUrl']}/0")
-    # ponytail: get_list (per-feature attachmentInfos) not search (queryAttachments);
-    # the Survey123 layer lacks supportsQueryAttachments, so search 400s.
-    attachments = layer.attachments.get_list(oid=fields["objectid"])
+    # The survey service exposes only Create,Editing to anonymous callers (no
+    # Query), so attachment listing and download both 400 without a token.
+    # Authenticate up front (reused for publishing below) and read the
+    # attachment list straight from the webhook payload instead of querying.
+    gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
+    layer = FeatureLayer(f"{submission['surveyInfo']['serviceUrl']}/0", gis=gis)
+
+    attachments = submission.get("attachmentInfos", [])
     xlsx = next((a for a in attachments if str(a["name"]).lower().endswith(".xlsx")), None)
     if xlsx is None:
         raise ValueError(f"no xlsx attached; feature carries {[a['name'] for a in attachments]}")
@@ -88,10 +91,7 @@ def run(submission):
 
     # 4: publish each one to the ArcGIS Online group
     from arcgis.features import GeoAccessor  # noqa: F401  registers .spatial on DataFrame
-    from arcgis.gis import GIS
 
-    # publishing writes to the portal, so unlike step 2 this needs a login
-    gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
     published = []
     for gdf, kind in ((points, "pontos"), (lines, "linhas")):
         item = pd.DataFrame.spatial.from_geodataframe(gdf).spatial.to_featurelayer(
