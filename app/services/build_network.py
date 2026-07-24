@@ -1,131 +1,101 @@
+"""Network building pipeline."""
+
+import csv
+import io
+import json
+import re
+import shutil
 import tempfile
-import unicodedata
-from functools import cache
+import urllib.parse
+import urllib.request
+from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 import geopandas as gpd
+import pandas as pd
+from arcgis.gis import GIS, ItemProperties, ItemTypeEnum
 
 from app import config
 
-GROUP_ID = "818a5ee2b139401a9face323f930f065"
-DATA_LAYER_ITEM_ID = "03884f842aaf4278bf46e9ceba4cd293"  # data layer holding submitted features + xlsx
-DATA = Path(__file__).resolve().parent.parent / "data"
+GROUP_ID = "c9eb1e35ee3443e7a1143d96d20aab78"
 
-def _fold(nome):
-    """Municipality name without case or accents, for matching."""
-    stripped = unicodedata.normalize("NFKD", str(nome).casefold())
-    return "".join(c for c in stripped if not unicodedata.combining(c)).strip()
+# geocodigo -> UTM EPSG. Read once at import; the file is 5571 static rows.
+with (Path(__file__).resolve().parent.parent / "data" / "utmzones_municipality.csv").open(
+    encoding="utf-8", newline=""
+) as _zones:
+    UTM_ZONES = {row["geocodigo"]: int(row["utmepsg"]) for row in csv.DictReader(_zones)}
 
-@cache
-def _utm_by_municipio():
-    """{folded name: [SIRGAS 2000 UTM EPSG, ...]} for all 5571 municipalities.
+WATER_POINTS = ["Label", "Status do Ativo", "X", "Y"]
+WATER_LINES = ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]
+SEWER_POINTS = ["Label", "ACAO_FICHA_TPF", "X", "Y"]
+SEWER_LINES = ["Label", "ACAO_FICHA_TPF", "Diameter", "geometry"]
 
-    The CSV is UTF-8 (pandas' default). Reading it as latin-1 still "works"
-    and silently yields 5298 names instead of 5290, because the mojibake
-    folds differently — so the count is the check that the encoding is right.
-    """
-    table = pd.read_csv(DATA / "utmzones_municipality.csv", usecols=["nome", "utmepsg"])
-    lookup = {}
-    for nome, epsg in zip(table["nome"], table["utmepsg"]):
-        lookup.setdefault(_fold(nome), set()).add(int(epsg))
-    return {name: sorted(codes) for name, codes in lookup.items()}
+# One map for both networks; rename ignores keys a sheet does not have.
+RENAMES = {
+    "Label": "label",
+    "Status do Ativo": "acao",
+    "ACAO_FICHA_TPF": "acao",
+    "Diâmetro_Comercial": "diametro",
+    "Diameter": "diametro",
+}
 
-def utm_epsg(municipio):
-    """SIRGAS 2000 UTM EPSG code for a municipality name.
+TANK_TYPES = {
+    "Apoiado": "Reservatórios apoiados",
+    "Elevado": "Reservatórios elevados",
+    "Semienterrado": "Reservatórios semienterrados",
+}
 
-    190 of the 5290 distinct names are shared across states with different UTM
-    zones ("Capanema" is 31982 in PR and 31983 in PA), so an ambiguous name
-    raises instead of guessing a zone.
-    """
-    codes = _utm_by_municipio().get(_fold(municipio))
-    if not codes:
-        raise ValueError(f"unknown municipality {municipio!r}")
-    if len(codes) > 1:
-        raise ValueError(f"municipality {municipio!r} spans UTM zones {codes}; needs a state")
-    return codes[0]
+
+def _token():
+    """Trade the configured credentials for a token. Valid ~2h; not cached."""
+    body = urllib.parse.urlencode(
+        {
+            "username": config.ARCGIS_USERNAME,
+            "password": config.ARCGIS_PASSWORD,
+            "referer": config.ARCGIS_URL,
+            "f": "json",
+        }
+    ).encode()
+    with urllib.request.urlopen(f"{config.ARCGIS_URL}/sharing/rest/generateToken", body) as response:
+        got = json.load(response)
+    if "token" not in got:
+        # ArcGIS answers 200 with an error body, so this is the only failure signal
+        raise RuntimeError(f"ArcGIS login failed: {got}")
+    return got["token"]
+
 
 def check(submission):
-    """Validate a webhook payload without any network or file work.
+    """Validate the submission shape. Returns (attributes, submission).
 
-    Everything here fails fast and cheap, so the webhook can answer 400
-    synchronously before handing the slow download/parse/publish to a
-    background task. Returns (fields, crs) for run() to reuse.
+    Raises ValueError on a bad body — the router turns that into a 400.
     """
-    # 1: get the ArcGIS feature from the submission
     try:
         fields = submission["feature"]["attributes"]
-    except (KeyError, TypeError) as missing:
-        raise ValueError(f"not a Survey123 submission; got keys {sorted(submission)}") from missing
-    if fields.get("field_2") not in ("WaterCAD", "SewerCAD"):
-        raise ValueError(f"field_2 must be WaterCAD or SewerCAD, got {fields.get('field_2')!r}")
-    return fields, utm_epsg(fields.get("munic_pio"))
+    except (KeyError, TypeError) as bad:
+        raise ValueError("expected feature.attributes in the body") from bad
+    if not isinstance(fields, dict):
+        raise ValueError("feature.attributes must be an object")
+    # ponytail: shape only. The field_2 and municipality rules the router
+    # docstring mentions are not implemented — I don't know them yet.
+    return fields, submission
 
-def run(submission):
-    """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
-    fields, crs = check(submission)
 
-    # 2: get the xlsx attachment from the DATA layer and save it to a temp file
-    from arcgis.gis import GIS
+def _column(df, axis):
+    """The column named exactly for this axis, ignoring 'X Coordinate'-style neighbours."""
+    return next((c for c in df.columns if axis in str(c).split()), None)
 
-    # Survey123 writes each submission to a buffer layer (the webhook's
-    # serviceUrl); an ETL then copies the feature + xlsx into the data layer,
-    # keyed by the same globalid. So the attachment is read from the data layer,
-    # matched by globalid — the webhook's objectid belongs to the buffer, not here.
-    gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
-    layer = gis.content.get(DATA_LAYER_ITEM_ID).layers[0]
-
-    gid = fields["globalid"]
-    oid_field = layer.properties.objectIdField
-    matches = layer.query(
-        where=f"{layer.properties.globalIdField}='{gid}'",
-        out_fields=oid_field, return_geometry=False,
-    ).features
-    if not matches:
-        raise ValueError(f"no data-layer feature for globalid {gid} (ETL not done yet?)")
-    oid = matches[0].attributes[oid_field]
-
-    attachments = layer.attachments.get_list(oid=oid)
-    xlsx = next((a for a in attachments if str(a["name"]).lower().endswith(".xlsx")), None)
-    if xlsx is None:
-        raise ValueError(f"no xlsx attached to oid {oid}; carries {[a['name'] for a in attachments]}")
-
-    with tempfile.TemporaryDirectory() as workdir:
-        path = layer.attachments.download(
-            oid=oid, attachment_id=xlsx["id"], save_path=workdir
-        )[0]
-
-        # 3: pick the WaterCAD or SewerCAD routine (field_2 already vetted by check)
-        reader = read_water if fields["field_2"] == "WaterCAD" else read_sewer
-        points, lines = reader(path, crs)
-
-    # 4: publish each one to the ArcGIS Online group
-    from arcgis.features import GeoAccessor  # noqa: F401  registers .spatial on DataFrame
-
-    published = []
-    for gdf, kind in ((points, "pontos"), (lines, "linhas")):
-        item = pd.DataFrame.spatial.from_geodataframe(gdf).spatial.to_featurelayer(
-            f"{fields['field_2']}_{fields['objectid']}_{kind}", gis=gis, tags=["geohub"]
-        )
-        # ponytail: Item.share is deprecated in arcgis 2.x but still works.
-        # Move to item.sharing.groups.add() when it actually goes away.
-        item.share(groups=[GROUP_ID])
-        published.append({"id": item.id, "title": item.title, "url": item.homepage})
-    return published
 
 def _build_links(full_sheet, crs):
     full_sheet = {k: v for k, v in full_sheet.items() if k != "Grid"}  # decoy X/Y cols
-    col = lambda df, ax: next((c for c in df.columns if ax in str(c).split()), None)
-    has = lambda df, cols: set(cols) <= set(df.columns)
 
     # nodes = every sheet with whole-word X/Y; links = every sheet with Start/Stop Node
     def _nodes(df):
-        cx, cy = col(df, "X"), col(df, "Y")  # Wet Well uses 'X'/'Y'
+        cx, cy = _column(df, "X"), _column(df, "Y")  # Wet Well uses 'X'/'Y'
         return df[["Element", cx, cy]].rename(columns={cx: "X", cy: "Y"})
 
     nodes = pd.concat(
         _nodes(df) for df in full_sheet.values()
-        if col(df, "X") and col(df, "Y") and "Element" in df.columns
+        if _column(df, "X") and _column(df, "Y") and "Element" in df.columns
     )
     xy = nodes.drop_duplicates("Element").set_index("Element")[["X", "Y"]].apply(tuple, axis=1)
 
@@ -144,175 +114,165 @@ def _build_links(full_sheet, crs):
     # links kept per-sheet so read_water/read_sewer filter on their own structure
     links = {
         name: gpd.GeoDataFrame(df, geometry=_geom(df), crs=crs)
-        for name, df in full_sheet.items() if has(df, ("Start Node", "Stop Node"))
+        for name, df in full_sheet.items()
+        if {"Start Node", "Stop Node"} <= set(df.columns)
     }
     return nodes, links
 
-def read_water(path, crs):
-    full_sheet = pd.read_excel(path, sheet_name=None, decimal = ",", thousands = ".")
 
-    tank = full_sheet["Tank"][full_sheet["Tank"]["Is Active?"]]
+def _active(full_sheet, sheet):
+    return full_sheet[sheet][full_sheet[sheet]["Is Active?"]]
 
-    rap = (tank
-        .loc[tank["Tipo de Reservatório"] == "Apoiado"]
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Reservatórios apoiados")
+
+def read_water(full_sheet, crs):
+    """Split the water workbook into (point structures, line structures)."""
+    tank = _active(full_sheet, "Tank")
+    tanks = (
+        tank.loc[:, WATER_POINTS]
+        .assign(tipo_est=tank["Tipo de Reservatório"].map(TANK_TYPES))
+        .dropna(subset=["tipo_est"])
     )
 
-    rel = (tank
-        .loc[tank["Tipo de Reservatório"] == "Elevado"]
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Reservatórios elevados")
+    reservoir = _active(full_sheet, "Reservoir")
+    eta = reservoir.loc[
+        reservoir["Label"].str.contains("ETA", case=False, na=False), WATER_POINTS
+    ].assign(tipo_est="Estações de tratamento de água")
+
+    eea = _active(full_sheet, "Pump").loc[:, WATER_POINTS].assign(
+        tipo_est="Estações elevatórias de água"
+    )
+    vrps = _active(full_sheet, "PRV").loc[:, WATER_POINTS].assign(
+        tipo_est="Válvula redutora de pressão"
     )
 
-    rse = (tank
-        .loc[tank["Tipo de Reservatório"] == "Semienterrado"]
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Reservatórios semienterrados")
+    points = pd.concat([tanks, eta, eea, vrps])
+    points = gpd.GeoDataFrame(
+        points, geometry=gpd.points_from_xy(points["X"], points["Y"]), crs=crs
     )
 
-    reservoir = full_sheet["Reservoir"][full_sheet["Reservoir"]["Is Active?"]]
-
-    eta = (reservoir
-        .loc[reservoir["Label"].str.contains("ETA", case=False, na=False)]
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Estações de tratamento de água")
+    pipes = _build_links(full_sheet, crs)[1]["Pipe"]
+    pipes = pipes[pipes["Is Active?"]]
+    lines = pd.concat(
+        pipes.loc[pipes["Classe Macro"] == macro, WATER_LINES].assign(tipo_est=tipo)
+        for macro, tipo in (
+            ("Adução", "Adutoras"),
+            ("Distribuição", "Rede de abastecimento de água"),
+        )
     )
 
-    pump = full_sheet["Pump"][full_sheet["Pump"]["Is Active?"]]
+    return [
+        points.rename(columns=RENAMES).drop(columns=["X", "Y"]).reset_index(drop=True),
+        lines.rename(columns=RENAMES).reset_index(drop=True),
+    ]
 
-    eea  = (pump
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Estações elevatórias de água")
+
+def read_sewer(full_sheet, crs):
+    """Split the sewer workbook into (point structures, line structures)."""
+    # ponytail: Wet Well is read unfiltered — every other sheet filters on
+    # 'Is Active?'. Confirm the sheet has no such column before relying on this.
+    eee = full_sheet["Wet Well"].loc[:, SEWER_POINTS].assign(
+        tipo_est="Estações elevatórias de esgoto"
     )
 
-    # pt = None     # May be in Reservoir
+    manhole = _active(full_sheet, "Manhole")
+    ete = manhole.loc[
+        manhole["Label"].str.contains("ETE", case=False, na=False), SEWER_POINTS
+    ].assign(tipo_est="Estações de tratamento de esgoto")
 
-    prv = full_sheet["PRV"][full_sheet["PRV"]["Is Active?"]]
-
-    vrps = (
-        prv
-        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
-        .assign(tipo_est = "Válvula redutora de pressão")
+    corpo_receptor = _active(full_sheet, "Outfall").loc[:, SEWER_POINTS].assign(
+        tipo_est="Corpo receptor"
     )
 
-    sab_estruturas_p = pd.concat([rel, rap, rse, eta, eea, vrps])
-    sab_estruturas_p = gpd.GeoDataFrame(
-        sab_estruturas_p,
-        geometry = gpd.points_from_xy(sab_estruturas_p["X"], sab_estruturas_p["Y"]),
-        crs = crs
-    )
+    points = pd.concat([eee, ete, corpo_receptor])
+    points = gpd.GeoDataFrame(
+        points, geometry=gpd.points_from_xy(points["X"], points["Y"]), crs=crs
+    ).drop(columns=["X", "Y"])
 
-    _, links = _build_links(full_sheet, crs)
-    links = links["Pipe"]
-
-    adutoras = (links
-        .loc[links["Is Active?"] & (links["Classe Macro"] == "Adução")]
-        .loc[:, ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]]
-        .assign(tipo_est="Adutoras")
-    )
-
-    rede = (links
-        .loc[links["Is Active?"] & (links["Classe Macro"] == "Distribuição")]
-        .loc[:, ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]]
-        .assign(tipo_est="Rede de abastecimento de água")
-    )
-
-    sab_estruturas_l = pd.concat([adutoras, rede])
-
-    sab_estruturas_p = (sab_estruturas_p
-        .rename(columns = {
-            "Label": "label",
-            "Status do Ativo": "acao",
-            "Diâmetro_Comercial": "diametro"
-        })
-        .drop(columns = ["X", "Y"])
-    )
-
-    sab_estruturas_l = (sab_estruturas_l
-        .rename(columns = {
-            "Label": "label",
-            "Status do Ativo": "acao",
-            "Diâmetro_Comercial": "diametro"
-        })
-    )
-
-    return ([sab_estruturas_p.reset_index(), sab_estruturas_l.reset_index()])
-
-def read_sewer(path, crs):
-    full_sheet = pd.read_excel(path, sheet_name=None, decimal = ",", thousands = ".")
-
-    wet_well = full_sheet["Wet Well"]
-
-    eee = (wet_well
-        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
-        .assign(tipo_est = "Estações elevatórias de esgoto")
-    ).rename(columns = {
-        "Label": "label",
-        "ACAO_FICHA_TPF": "acao",
-        "X": "X",
-        "Y": "Y"
-    })
-
-    manhole = full_sheet["Manhole"][full_sheet["Manhole"]["Is Active?"]]
-
-    ete = (manhole
-        .loc[manhole["Label"].str.contains("ETE", case=False, na=False)]
-        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
-        .assign(tipo_est = "Estações de tratamento de esgoto")
-    ).rename(columns = {
-        "Label": "label",
-        "ACAO_FICHA_TPF": "acao"
-    })
-
-    outfall = full_sheet["Outfall"][full_sheet["Outfall"]["Is Active?"]]
-
-    corpo_receptor = (outfall
-        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
-        .assign(tipo_est = "Corpo receptor")
-    ).rename(columns = {
-        "Label": "label",
-        "ACAO_FICHA_TPF": "acao"
-    })
-
-    sab_estruturas_p = pd.concat([eee, ete, corpo_receptor])
-    sab_estruturas_p = gpd.GeoDataFrame(
-        sab_estruturas_p,
-        geometry = gpd.points_from_xy(sab_estruturas_p["X"], sab_estruturas_p["Y"]),
-        crs = crs
-    ).drop(columns = ["X", "Y"])
-
-    _, links = _build_links(full_sheet, crs)
+    links = _build_links(full_sheet, crs)[1]
     conduit = links["Conduit"]
-    pressure = links["Pressure Pipe"]
+    lines = pd.concat([
+        links["Pressure Pipe"].loc[:, SEWER_LINES].assign(tipo_est="Linha de recalque"),
+        *(
+            conduit.loc[conduit["Label"].str.contains(pattern, na=False), SEWER_LINES]
+            .assign(tipo_est=tipo)
+            for pattern, tipo in (
+                (r"^EF", "Emissário final"),
+                (r"^INT", "Interceptor"),
+                (r"^SB", "Rede de coleta de esgoto"),
+            )
+        ),
+    ])
 
-    cols = ["Label", "ACAO_FICHA_TPF", "Diameter", "geometry"]
+    return [
+        points.rename(columns=RENAMES).reset_index(drop=True),
+        lines.rename(columns=RENAMES).reset_index(drop=True),
+    ]
 
-    linha_recalque = (pressure
-        .loc[:, cols]
-        .assign(tipo_est = "Linha de recalque")
-    )
 
-    emissario = (conduit
-        .loc[conduit["Label"].str.contains(r"^EF", na=False), cols]
-        .assign(tipo_est = "Emissário final")
-    )
+READERS = {"SAA": read_water, "SES": read_sewer}
 
-    interceptor = (conduit
-        .loc[conduit["Label"].str.contains(r"^INT", na=False), cols]
-        .assign(tipo_est = "Interceptor")
-    )
 
-    rede = (conduit
-        .loc[conduit["Label"].str.contains(r"^SB", na=False), cols]
-        .assign(tipo_est = "Rede de coleta de esgoto")
-    )
+def _publish(points, lines, title, gis):
+    """Publish both layers as one hosted feature service, shared to the group.
 
-    sab_estruturas_l = pd.concat([linha_recalque, emissario, interceptor, rede])
-    sab_estruturas_l = sab_estruturas_l.rename(columns = {
-        "Label": "label",
-        "ACAO_FICHA_TPF": "acao",
-        "Diameter": "diametro"
-    })
+    A file geodatabase is the carrier because it is the format that survives
+    the round trip with two layers and untruncated field names.
+    """
+    service = re.sub(r"\W+", "_", title)  # AGOL service names take no spaces
+    with tempfile.TemporaryDirectory() as tmp:
+        gdb = Path(tmp) / f"{service}.gdb"
+        points.to_file(gdb, driver="OpenFileGDB", layer="sab_estruturas_p")
+        lines.to_file(gdb, driver="OpenFileGDB", layer="sab_estruturas_l", mode="a")
+        archive = shutil.make_archive(str(Path(tmp) / service), "zip", tmp, gdb.name)
+        source = (
+            gis.content.folders.get()  # the signed-in user's root folder
+            .add(
+                ItemProperties(
+                    title=title,
+                    item_type=ItemTypeEnum.FILE_GEODATABASE.value,
+                    tags="build_network",
+                ),
+                file=archive,
+            )
+            .result()
+        )
 
-    return ([sab_estruturas_p.reset_index(), sab_estruturas_l.reset_index()])
+    # ponytail: the uploaded .gdb item is kept as the service's source data.
+    # source.delete() here if the org should only hold the published service.
+    item = source.publish(publish_parameters={"name": service}, file_type="fileGeodatabase")
+    item.share(groups=[GROUP_ID])
+    return {"title": item.title, "id": item.id, "url": item.url}
+
+
+def run(submission):
+    """Parse the submission's spreadsheet; publish it as hosted feature layers."""
+    attributes = submission["feature"]["attributes"]
+    tipo_rede = attributes["tipo_rede"]
+    reader = READERS.get(tipo_rede)
+    if reader is None:
+        raise ValueError(f"unknown tipo_rede: {tipo_rede!r}")
+
+    # nome_mun carries the geocodigo, not the name — the domain's value column
+    municipality = str(attributes["nome_mun"])
+    if municipality not in UTM_ZONES:
+        raise ValueError(f"no UTM zone for municipality {municipality!r}")
+    crs = UTM_ZONES[municipality]
+
+    attachment = submission["feature"]["attachments"]["file_xlsx"][0]
+    separator = "&" if "?" in attachment["url"] else "?"
+    with urllib.request.urlopen(f"{attachment['url']}{separator}token={_token()}") as response:
+        workbook = io.BytesIO(response.read())  # openpyxl seeks, so buffer the stream
+
+    full_sheet = pd.read_excel(workbook, sheet_name=None, decimal=",", thousands=".")
+    points, lines = reader(full_sheet, crs)
+
+    stamp = {
+        "nome_mun": municipality,
+        "tipo_rede": tipo_rede,
+        "alternativa": attributes["alternativa"],
+    }
+    gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
+    # local time, so the prefix reads as the submission's own clock
+    when = datetime.now().strftime("%Y%m%d%H%M%S")
+    title = f"{when}_{municipality}_{tipo_rede}_{attributes['alternativa']}"
+    return [_publish(points.assign(**stamp), lines.assign(**stamp), title, gis)]
