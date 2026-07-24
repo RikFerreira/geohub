@@ -1,5 +1,6 @@
 """Application entrypoint."""
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +11,10 @@ from app import config
 from app.routers import build_network
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# Without this the log.exception in the background task goes nowhere: uvicorn
+# configures its own loggers, not the app's.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
 

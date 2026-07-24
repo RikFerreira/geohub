@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -16,6 +17,8 @@ import pandas as pd
 from arcgis.gis import GIS, ItemProperties, ItemTypeEnum
 
 from app import config
+
+log = logging.getLogger(__name__)
 
 GROUP_ID = "c9eb1e35ee3443e7a1143d96d20aab78"
 
@@ -60,6 +63,7 @@ def _token():
         got = json.load(response)
     if "token" not in got:
         # ArcGIS answers 200 with an error body, so this is the only failure signal
+        log.error("ArcGIS login failed: %s", got)
         raise RuntimeError(f"ArcGIS login failed: {got}")
     return got["token"]
 
@@ -72,8 +76,10 @@ def check(submission):
     try:
         fields = submission["feature"]["attributes"]
     except (KeyError, TypeError) as bad:
+        log.warning("rejected submission: no feature.attributes (%s)", bad)
         raise ValueError("expected feature.attributes in the body") from bad
     if not isinstance(fields, dict):
+        log.warning("rejected submission: feature.attributes is %s", type(fields).__name__)
         raise ValueError("feature.attributes must be an object")
     # ponytail: shape only. The field_2 and municipality rules the router
     # docstring mentions are not implemented — I don't know them yet.
@@ -250,11 +256,13 @@ def run(submission):
     tipo_rede = attributes["tipo_rede"]
     reader = READERS.get(tipo_rede)
     if reader is None:
+        log.error("unknown tipo_rede %r; expected one of %s", tipo_rede, sorted(READERS))
         raise ValueError(f"unknown tipo_rede: {tipo_rede!r}")
 
     # nome_mun carries the geocodigo, not the name — the domain's value column
     municipality = str(attributes["nome_mun"])
     if municipality not in UTM_ZONES:
+        log.error("no UTM zone for nome_mun %r — is it a geocodigo?", municipality)
         raise ValueError(f"no UTM zone for municipality {municipality!r}")
     crs = UTM_ZONES[municipality]
 
