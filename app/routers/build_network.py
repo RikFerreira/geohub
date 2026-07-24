@@ -47,6 +47,7 @@ async def survey123_webhook(
     try:
         fields, _ = build_network.check(submission)
     except ValueError as bad:
+        log.warning("rejected submission: %s", bad)
         raise HTTPException(status_code=400, detail=str(bad)) from bad
     background.add_task(_publish, submission)
     return {"status": "accepted", "objectid": fields.get("objectid")}
