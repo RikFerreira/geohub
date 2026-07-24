@@ -70,14 +70,16 @@ def run(submission):
     # ponytail: anonymous GIS, the survey layer is public. Pass credentials
     # to GIS() if it ever gets secured. Survey123 answers live in layer 0.
     layer = FeatureLayer(f"{submission['surveyInfo']['serviceUrl']}/0")
-    attachments = layer.attachments.search(object_ids=[fields["objectid"]])
-    xlsx = next((a for a in attachments if str(a["NAME"]).lower().endswith(".xlsx")), None)
+    # ponytail: get_list (per-feature attachmentInfos) not search (queryAttachments);
+    # the Survey123 layer lacks supportsQueryAttachments, so search 400s.
+    attachments = layer.attachments.get_list(oid=fields["objectid"])
+    xlsx = next((a for a in attachments if str(a["name"]).lower().endswith(".xlsx")), None)
     if xlsx is None:
-        raise ValueError(f"no xlsx attached; feature carries {[a['NAME'] for a in attachments]}")
+        raise ValueError(f"no xlsx attached; feature carries {[a['name'] for a in attachments]}")
 
     with tempfile.TemporaryDirectory() as workdir:
         path = layer.attachments.download(
-            oid=fields["objectid"], attachment_id=xlsx["ID"], save_path=workdir
+            oid=fields["objectid"], attachment_id=xlsx["id"], save_path=workdir
         )[0]
 
         # 3: pick the WaterCAD or SewerCAD routine (field_2 already vetted by check)
