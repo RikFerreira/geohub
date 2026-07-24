@@ -1,161 +1,298 @@
-"""Survey123 submission to a published ArcGIS Online feature layer."""
+import tempfile
+import unicodedata
+from functools import cache
+from pathlib import Path
 
-from typing import Any, Literal
+import pandas as pd
+import geopandas as gpd
 
-# ponytail: alias, not an import. Swap Any for pandas.DataFrame once that
-# dependency lands.
-DataFrame = Any
+from app import config
 
-# An ArcGIS feature as the webhook posts it: {"attributes": {...},
-# "geometry": {...}}. Not the arcgis package's Feature class — nothing here
-# holds a live connection, so read_attachment has to authenticate on its own.
-Feature = dict[str, Any]
+GROUP_ID = "818a5ee2b139401a9face323f930f065"
+DATA = Path(__file__).resolve().parent.parent / "data"
 
-Routine = Literal["watercad", "sewercad"]
+def _fold(nome):
+    """Municipality name without case or accents, for matching."""
+    stripped = unicodedata.normalize("NFKD", str(nome).casefold())
+    return "".join(c for c in stripped if not unicodedata.combining(c)).strip()
 
+@cache
+def _utm_by_municipio():
+    """{folded name: [SIRGAS 2000 UTM EPSG, ...]} for all 5571 municipalities.
 
-def main(submission: dict[str, Any]) -> dict[str, Any]:
-    # 1: Get ArcGIS feature from submission (step 2a comes free with it —
-    #    get_feature already returns the form answers under "attributes")
-    # 2b: Read the XLSX attachment of the feature as a list of pandas DataFrames
-    # 3: Check if it should trigger the routine for WaterCAD or SewerCAD
-    # 4: Create a new FeatureLayer in an existing ArcGIS Online group
-    feature = get_feature(submission)
-    tables = read_attachment(service_url(submission), feature["attributes"]["objectid"])
-    routine = select_routine(feature["attributes"])
-    return publish_feature_layer(routine, tables)
-
-
-def get_feature(submission: dict[str, Any]) -> Feature:
-    """Locate the ArcGIS feature a webhook submission refers to.
-
-    Survey123 posts the feature inline, so no service call is needed here.
-    The service URL and object id that step 2b needs are validated too, so a
-    malformed payload fails once, here, with a message naming the missing key
-    — rather than as a KeyError three calls deeper.
-
-    Args:
-        submission: Decoded Survey123 webhook payload.
-
-    Returns:
-        The feature the form submission created, carrying "attributes" and,
-        when the form captured a location, "geometry".
-
-    Raises:
-        ValueError: The payload is missing a field the pipeline needs.
+    The CSV is UTF-8 (pandas' default). Reading it as latin-1 still "works"
+    and silently yields 5298 names instead of 5290, because the mojibake
+    folds differently — so the count is the check that the encoding is right.
     """
-    feature = _require(submission, "feature", dict, "payload")
-    attributes = _require(feature, "attributes", dict, "feature")
-    _require(attributes, "objectid", int, "feature.attributes")
-    _require(
-        _require(submission, "surveyInfo", dict, "payload"),
-        "serviceUrl",
-        str,
-        "surveyInfo",
-    )
-    return feature
+    table = pd.read_csv(DATA / "utmzones_municipality.csv", usecols=["nome", "utmepsg"])
+    lookup = {}
+    for nome, epsg in zip(table["nome"], table["utmepsg"]):
+        lookup.setdefault(_fold(nome), set()).add(int(epsg))
+    return {name: sorted(codes) for name, codes in lookup.items()}
 
+def utm_epsg(municipio):
+    """SIRGAS 2000 UTM EPSG code for a municipality name.
 
-def _require(source: dict[str, Any], key: str, kind: type, where: str) -> Any:
-    """Fetch a required key, or explain what the payload held instead."""
-    value = source.get(key)
-    if not isinstance(value, kind) or isinstance(value, bool):
-        raise ValueError(
-            f"{where}.{key} must be {kind.__name__}, got {type(value).__name__}; "
-            f"{where} keys: {sorted(source)}"
+    190 of the 5290 distinct names are shared across states with different UTM
+    zones ("Capanema" is 31982 in PR and 31983 in PA), so an ambiguous name
+    raises instead of guessing a zone.
+    """
+    codes = _utm_by_municipio().get(_fold(municipio))
+    if not codes:
+        raise ValueError(f"unknown municipality {municipio!r}")
+    if len(codes) > 1:
+        raise ValueError(f"municipality {municipio!r} spans UTM zones {codes}; needs a state")
+    return codes[0]
+
+def run(submission):
+    """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
+    # 1: get the ArcGIS feature from the submission
+    try:
+        fields = submission["feature"]["attributes"]
+    except (KeyError, TypeError) as missing:
+        raise ValueError(f"not a Survey123 submission; got keys {sorted(submission)}") from missing
+
+    crs = utm_epsg(fields.get("munc_pio"))
+
+    # 2: get the xlsx from the feature attachment and save it to a temp file
+    from arcgis.features import FeatureLayer  # deferred: seconds to import
+
+    # ponytail: anonymous GIS, the survey layer is public. Pass credentials
+    # to GIS() if it ever gets secured. Survey123 answers live in layer 0.
+    layer = FeatureLayer(f"{submission['surveyInfo']['serviceUrl']}/0")
+    attachments = layer.attachments.search(object_ids=[fields["objectid"]])
+    xlsx = next((a for a in attachments if str(a["NAME"]).lower().endswith(".xlsx")), None)
+    if xlsx is None:
+        raise ValueError(f"no xlsx attached; feature carries {[a['NAME'] for a in attachments]}")
+
+    with tempfile.TemporaryDirectory() as workdir:
+        path = layer.attachments.download(
+            oid=fields["objectid"], attachment_id=xlsx["ID"], save_path=workdir
+        )[0]
+
+        # 3: pick the WaterCAD or SewerCAD routine
+        readers = {"WaterCAD": read_water, "SewerCAD": read_sewer}
+        if fields.get("field_2") not in readers:
+            raise ValueError(f"field_2 must be WaterCAD or SewerCAD, got {fields.get('field_2')!r}")
+        points, lines = readers[fields["field_2"]](path, crs)
+
+    # 4: publish each one to the ArcGIS Online group
+    from arcgis.features import GeoAccessor  # noqa: F401  registers .spatial on DataFrame
+    from arcgis.gis import GIS
+
+    # publishing writes to the portal, so unlike step 2 this needs a login
+    gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
+    published = []
+    for gdf, kind in ((points, "pontos"), (lines, "linhas")):
+        item = pd.DataFrame.spatial.from_geodataframe(gdf).spatial.to_featurelayer(
+            f"{fields['field_2']}_{fields['objectid']}_{kind}", gis=gis, tags=["geohub"]
         )
-    return value
+        # ponytail: Item.share is deprecated in arcgis 2.x but still works.
+        # Move to item.sharing.groups.add() when it actually goes away.
+        item.share(groups=[GROUP_ID])
+        published.append({"id": item.id, "title": item.title, "url": item.homepage})
+    return published
 
+def _build_links(full_sheet, crs):
+    full_sheet = {k: v for k, v in full_sheet.items() if k != "Grid"}  # decoy X/Y cols
+    col = lambda df, ax: next((c for c in df.columns if ax in str(c).split()), None)
+    has = lambda df, cols: set(cols) <= set(df.columns)
 
-def service_url(submission: dict[str, Any]) -> str:
-    """Feature service the submission was written to."""
-    return submission["surveyInfo"]["serviceUrl"]
+    # nodes = every sheet with whole-word X/Y; links = every sheet with Start/Stop Node
+    def _nodes(df):
+        cx, cy = col(df, "X"), col(df, "Y")  # Wet Well uses 'X'/'Y'
+        return df[["Element", cx, cy]].rename(columns={cx: "X", cy: "Y"})
 
+    nodes = pd.concat(
+        _nodes(df) for df in full_sheet.values()
+        if col(df, "X") and col(df, "Y") and "Element" in df.columns
+    )
+    xy = nodes.drop_duplicates("Element").set_index("Element")[["X", "Y"]].apply(tuple, axis=1)
 
-def read_attachment(service_url: str, object_id: int) -> list[DataFrame]:
-    """Download the feature's XLSX attachment and parse its sheets.
+    def _geom(df):
+        s = df["Start Node"].map(xy)
+        e = df["Stop Node"].map(xy)
+        return gpd.GeoSeries.from_wkt([
+            f"LINESTRING({a[0]} {a[1]}, {b[0]} {b[1]})"
+            if isinstance(a, tuple) and isinstance(b, tuple) else None
+            for a, b in zip(s, e)  # ponytail: unmatched ends -> None geom, row kept
+        ], index=df.index)
 
-    The webhook payload does not carry attachment locations, so this queries
-    the service for them (`queryAttachments` on the layer) before downloading.
-
-    Args:
-        service_url: Feature service URL, from `surveyInfo.serviceUrl`.
-        object_id: Object id of the feature holding the attachment.
-
-    Returns:
-        One DataFrame per worksheet, in workbook order.
-    """
-    raise NotImplementedError
-
-
-def select_routine(fields: dict[str, Any]) -> Routine:
-    """Decide which hydraulic model the submission targets.
-
-    Args:
-        fields: Form answers, as returned by `read_fields`.
-
-    Returns:
-        Either "watercad" or "sewercad".
-    """
-    raise NotImplementedError
-
-
-def publish_feature_layer(routine: Routine, tables: list[DataFrame]) -> dict[str, Any]:
-    """Build the network and publish it to the ArcGIS Online group.
-
-    Args:
-        routine: Model selected by `select_routine`.
-        tables: Worksheets, as returned by `read_attachment`.
-
-    Returns:
-        Details of the published layer, echoed back to the webhook caller.
-    """
-    raise NotImplementedError
-
-
-if __name__ == "__main__":
-    # ponytail: self-check for get_feature, run with `python -m app.services.build_network`.
-    # Delete once a real payload fixture exists.
-    valid = {
-        "eventType": "addData",
-        "surveyInfo": {"serviceUrl": "https://services.arcgis.com/x/FeatureServer"},
-        "feature": {
-            "attributes": {"objectid": 7, "globalid": "{A-B}", "tipo": "agua"},
-            "geometry": {"x": -46.6, "y": -23.5, "spatialReference": {"wkid": 4326}},
-        },
+    nodes = gpd.GeoDataFrame(
+        nodes, geometry=gpd.points_from_xy(nodes["X"], nodes["Y"]), crs=crs
+    )
+    # links kept per-sheet so read_water/read_sewer filter on their own structure
+    links = {
+        name: gpd.GeoDataFrame(df, geometry=_geom(df), crs=crs)
+        for name, df in full_sheet.items() if has(df, ("Start Node", "Stop Node"))
     }
-    assert get_feature(valid) == valid["feature"]
-    assert service_url(valid).endswith("FeatureServer")
+    return nodes, links
 
-    def without(path: str) -> dict[str, Any]:
-        """Copy the valid payload with one nested key removed."""
-        import copy
+def read_water(path, crs):
+    full_sheet = pd.read_excel(path, sheet_name=None, decimal = ",", thousands = ".")
 
-        broken = copy.deepcopy(valid)
-        *parents, leaf = path.split(".")
-        target = broken
-        for parent in parents:
-            target = target[parent]
-        del target[leaf]
-        return broken
+    tank = full_sheet["Tank"][full_sheet["Tank"]["Is Active?"]]
 
-    for path in ("feature", "feature.attributes", "feature.attributes.objectid",
-                 "surveyInfo", "surveyInfo.serviceUrl"):
-        try:
-            get_feature(without(path))
-        except ValueError as error:
-            assert path.split(".")[-1] in str(error), error
-        else:
-            raise AssertionError(f"should have rejected a payload missing {path}")
+    rap = (tank
+        .loc[tank["Tipo de Reservatório"] == "Apoiado"]
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Reservatórios apoiados")
+    )
 
-    # objectid must be a real int, not a bool or a numeric string
-    for wrong in (True, "7", 7.0, None):
-        broken = {**valid, "feature": {"attributes": {"objectid": wrong}}}
-        try:
-            get_feature(broken)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"should have rejected objectid={wrong!r}")
+    rel = (tank
+        .loc[tank["Tipo de Reservatório"] == "Elevado"]
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Reservatórios elevados")
+    )
 
-    print("get_feature ok")
+    rse = (tank
+        .loc[tank["Tipo de Reservatório"] == "Semienterrado"]
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Reservatórios semienterrados")
+    )
+
+    reservoir = full_sheet["Reservoir"][full_sheet["Reservoir"]["Is Active?"]]
+
+    eta = (reservoir
+        .loc[reservoir["Label"].str.contains("ETA", case=False, na=False)]
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Estações de tratamento de água")
+    )
+
+    pump = full_sheet["Pump"][full_sheet["Pump"]["Is Active?"]]
+
+    eea  = (pump
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Estações elevatórias de água")
+    )
+
+    # pt = None     # May be in Reservoir
+
+    prv = full_sheet["PRV"][full_sheet["PRV"]["Is Active?"]]
+
+    vrps = (
+        prv
+        .loc[:, ["Label", "Status do Ativo", "X", "Y"]]
+        .assign(tipo_est = "Válvula redutora de pressão")
+    )
+
+    sab_estruturas_p = pd.concat([rel, rap, rse, eta, eea, vrps])
+    sab_estruturas_p = gpd.GeoDataFrame(
+        sab_estruturas_p,
+        geometry = gpd.points_from_xy(sab_estruturas_p["X"], sab_estruturas_p["Y"]),
+        crs = crs
+    )
+
+    _, links = _build_links(full_sheet, crs)
+    links = links["Pipe"]
+
+    adutoras = (links
+        .loc[links["Is Active?"] & (links["Classe Macro"] == "Adução")]
+        .loc[:, ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]]
+        .assign(tipo_est="Adutoras")
+    )
+
+    rede = (links
+        .loc[links["Is Active?"] & (links["Classe Macro"] == "Distribuição")]
+        .loc[:, ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]]
+        .assign(tipo_est="Rede de abastecimento de água")
+    )
+
+    sab_estruturas_l = pd.concat([adutoras, rede])
+
+    sab_estruturas_p = (sab_estruturas_p
+        .rename(columns = {
+            "Label": "label",
+            "Status do Ativo": "acao",
+            "Diâmetro_Comercial": "diametro"
+        })
+        .drop(columns = ["X", "Y"])
+    )
+
+    sab_estruturas_l = (sab_estruturas_l
+        .rename(columns = {
+            "Label": "label",
+            "Status do Ativo": "acao",
+            "Diâmetro_Comercial": "diametro"
+        })
+    )
+
+    return ([sab_estruturas_p.reset_index(), sab_estruturas_l.reset_index()])
+
+def read_sewer(path, crs):
+    full_sheet = pd.read_excel(path, sheet_name=None, decimal = ",", thousands = ".")
+
+    wet_well = full_sheet["Wet Well"]
+
+    eee = (wet_well
+        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
+        .assign(tipo_est = "Estações elevatórias de esgoto")
+    ).rename(columns = {
+        "Label": "label",
+        "ACAO_FICHA_TPF": "acao",
+        "X": "X",
+        "Y": "Y"
+    })
+
+    manhole = full_sheet["Manhole"][full_sheet["Manhole"]["Is Active?"]]
+
+    ete = (manhole
+        .loc[manhole["Label"].str.contains("ETE", case=False, na=False)]
+        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
+        .assign(tipo_est = "Estações de tratamento de esgoto")
+    ).rename(columns = {
+        "Label": "label",
+        "ACAO_FICHA_TPF": "acao"
+    })
+
+    outfall = full_sheet["Outfall"][full_sheet["Outfall"]["Is Active?"]]
+
+    corpo_receptor = (outfall
+        .loc[:, ["Label", "ACAO_FICHA_TPF", "X", "Y"]]
+        .assign(tipo_est = "Corpo receptor")
+    ).rename(columns = {
+        "Label": "label",
+        "ACAO_FICHA_TPF": "acao"
+    })
+
+    sab_estruturas_p = pd.concat([eee, ete, corpo_receptor])
+    sab_estruturas_p = gpd.GeoDataFrame(
+        sab_estruturas_p,
+        geometry = gpd.points_from_xy(sab_estruturas_p["X"], sab_estruturas_p["Y"]),
+        crs = crs
+    ).drop(columns = ["X", "Y"])
+
+    _, links = _build_links(full_sheet, crs)
+    conduit = links["Conduit"]
+    pressure = links["Pressure Pipe"]
+
+    cols = ["Label", "ACAO_FICHA_TPF", "Diameter", "geometry"]
+
+    linha_recalque = (pressure
+        .loc[:, cols]
+        .assign(tipo_est = "Linha de recalque")
+    )
+
+    emissario = (conduit
+        .loc[conduit["Label"].str.contains(r"^EF", na=False), cols]
+        .assign(tipo_est = "Emissário final")
+    )
+
+    interceptor = (conduit
+        .loc[conduit["Label"].str.contains(r"^INT", na=False), cols]
+        .assign(tipo_est = "Interceptor")
+    )
+
+    rede = (conduit
+        .loc[conduit["Label"].str.contains(r"^SB", na=False), cols]
+        .assign(tipo_est = "Rede de coleta de esgoto")
+    )
+
+    sab_estruturas_l = pd.concat([linha_recalque, emissario, interceptor, rede])
+    sab_estruturas_l = sab_estruturas_l.rename(columns = {
+        "Label": "label",
+        "ACAO_FICHA_TPF": "acao",
+        "Diameter": "diametro"
+    })
+
+    return ([sab_estruturas_p.reset_index(), sab_estruturas_l.reset_index()])

@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.services import build_network
 
@@ -10,8 +10,8 @@ router = APIRouter(prefix="/api/v1/build_network", tags=["build_network"])
 
 
 @router.post("")
-async def survey123_webhook(submission: dict[str, Any]) -> dict[str, Any]:
-    """Receive a Survey123 form submission and return the derived network."""
+async def survey123_webhook(submission: dict[str, Any]) -> list[dict[str, Any]]:
+    """Receive a Survey123 form submission and publish the derived network."""
     # ponytail: payload accepted untyped. Narrow it to a Pydantic model once a
     # real Survey123 body has been captured — guessing the schema now only
     # bakes in fields that may not exist.
@@ -23,4 +23,9 @@ async def survey123_webhook(submission: dict[str, Any]) -> dict[str, Any]:
     #   3. Attachment download runs inline, so the sender waits on it. If
     #      Survey123 starts timing out, move the work to a BackgroundTask and
     #      return 202 instead.
-    return build_network.main(submission)
+    try:
+        return build_network.run(submission)
+    except ValueError as bad:
+        # run() raises ValueError only for payloads it can't use — that's the
+        # caller's fault, not a 500.
+        raise HTTPException(status_code=400, detail=str(bad)) from bad
