@@ -44,15 +44,25 @@ def utm_epsg(municipio):
         raise ValueError(f"municipality {municipio!r} spans UTM zones {codes}; needs a state")
     return codes[0]
 
-def run(submission):
-    """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
+def check(submission):
+    """Validate a webhook payload without any network or file work.
+
+    Everything here fails fast and cheap, so the webhook can answer 400
+    synchronously before handing the slow download/parse/publish to a
+    background task. Returns (fields, crs) for run() to reuse.
+    """
     # 1: get the ArcGIS feature from the submission
     try:
         fields = submission["feature"]["attributes"]
     except (KeyError, TypeError) as missing:
         raise ValueError(f"not a Survey123 submission; got keys {sorted(submission)}") from missing
+    if fields.get("field_2") not in ("WaterCAD", "SewerCAD"):
+        raise ValueError(f"field_2 must be WaterCAD or SewerCAD, got {fields.get('field_2')!r}")
+    return fields, utm_epsg(fields.get("munc_pio"))
 
-    crs = utm_epsg(fields.get("munc_pio"))
+def run(submission):
+    """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
+    fields, crs = check(submission)
 
     # 2: get the xlsx from the feature attachment and save it to a temp file
     from arcgis.features import FeatureLayer  # deferred: seconds to import
@@ -70,11 +80,9 @@ def run(submission):
             oid=fields["objectid"], attachment_id=xlsx["ID"], save_path=workdir
         )[0]
 
-        # 3: pick the WaterCAD or SewerCAD routine
-        readers = {"WaterCAD": read_water, "SewerCAD": read_sewer}
-        if fields.get("field_2") not in readers:
-            raise ValueError(f"field_2 must be WaterCAD or SewerCAD, got {fields.get('field_2')!r}")
-        points, lines = readers[fields["field_2"]](path, crs)
+        # 3: pick the WaterCAD or SewerCAD routine (field_2 already vetted by check)
+        reader = read_water if fields["field_2"] == "WaterCAD" else read_sewer
+        points, lines = reader(path, crs)
 
     # 4: publish each one to the ArcGIS Online group
     from arcgis.features import GeoAccessor  # noqa: F401  registers .spatial on DataFrame
