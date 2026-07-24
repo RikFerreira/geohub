@@ -14,14 +14,13 @@ def test_check_returns_field2_and_crs():
     assert isinstance(crs, int)  # Bragança resolves to a single UTM zone
 
 
-def test_payload_carries_the_xlsx():
-    attachments = PAYLOAD.get("attachmentInfos", [])
-    xlsx = next((a for a in attachments if str(a["name"]).lower().endswith(".xlsx")), None)
-    assert xlsx is not None
-    assert xlsx["id"] == 11
+def test_payload_carries_globalid():
+    # run() queries the data layer by this globalid, so the field must be present
+    fields, _ = build_network.check(PAYLOAD)
+    assert fields["globalid"].startswith("{") and fields["globalid"].endswith("}")
 
 
 if __name__ == "__main__":
     test_check_returns_field2_and_crs()
-    test_payload_carries_the_xlsx()
+    test_payload_carries_globalid()
     print("ok")

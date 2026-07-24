@@ -9,6 +9,7 @@ import geopandas as gpd
 from app import config
 
 GROUP_ID = "818a5ee2b139401a9face323f930f065"
+DATA_LAYER_ITEM_ID = "03884f842aaf4278bf46e9ceba4cd293"  # data layer holding submitted features + xlsx
 DATA = Path(__file__).resolve().parent.parent / "data"
 
 def _fold(nome):
@@ -64,25 +65,34 @@ def run(submission):
     """Route a Survey123 webhook POST to the WaterCAD or SewerCAD reader."""
     fields, crs = check(submission)
 
-    # 2: get the xlsx from the feature attachment and save it to a temp file
-    from arcgis.features import FeatureLayer  # deferred: seconds to import
+    # 2: get the xlsx attachment from the DATA layer and save it to a temp file
     from arcgis.gis import GIS
 
-    # The survey service exposes only Create,Editing to anonymous callers (no
-    # Query), so attachment listing and download both 400 without a token.
-    # Authenticate up front (reused for publishing below) and read the
-    # attachment list straight from the webhook payload instead of querying.
+    # Survey123 writes each submission to a buffer layer (the webhook's
+    # serviceUrl); an ETL then copies the feature + xlsx into the data layer,
+    # keyed by the same globalid. So the attachment is read from the data layer,
+    # matched by globalid — the webhook's objectid belongs to the buffer, not here.
     gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
-    layer = FeatureLayer(f"{submission['surveyInfo']['serviceUrl']}/0", gis=gis)
+    layer = gis.content.get(DATA_LAYER_ITEM_ID).layers[0]
 
-    attachments = submission.get("attachmentInfos", [])
+    gid = fields["globalid"]
+    oid_field = layer.properties.objectIdField
+    matches = layer.query(
+        where=f"{layer.properties.globalIdField}='{gid}'",
+        out_fields=oid_field, return_geometry=False,
+    ).features
+    if not matches:
+        raise ValueError(f"no data-layer feature for globalid {gid} (ETL not done yet?)")
+    oid = matches[0].attributes[oid_field]
+
+    attachments = layer.attachments.get_list(oid=oid)
     xlsx = next((a for a in attachments if str(a["name"]).lower().endswith(".xlsx")), None)
     if xlsx is None:
-        raise ValueError(f"no xlsx attached; feature carries {[a['name'] for a in attachments]}")
+        raise ValueError(f"no xlsx attached to oid {oid}; carries {[a['name'] for a in attachments]}")
 
     with tempfile.TemporaryDirectory() as workdir:
         path = layer.attachments.download(
-            oid=fields["objectid"], attachment_id=xlsx["id"], save_path=workdir
+            oid=oid, attachment_id=xlsx["id"], save_path=workdir
         )[0]
 
         # 3: pick the WaterCAD or SewerCAD routine (field_2 already vetted by check)
