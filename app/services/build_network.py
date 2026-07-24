@@ -68,6 +68,11 @@ def _token():
     return got["token"]
 
 
+def _keys(obj):
+    """Sorted keys of a mapping, or the type name for anything else."""
+    return sorted(obj) if isinstance(obj, dict) else type(obj).__name__
+
+
 def check(submission):
     """Validate the submission shape. Returns (attributes, submission).
 
@@ -76,7 +81,13 @@ def check(submission):
     try:
         fields = submission["feature"]["attributes"]
     except (KeyError, TypeError) as bad:
-        log.warning("rejected submission: no feature.attributes (%s)", bad)
+        # the keys are the whole diagnosis: they say what the sender did post
+        log.warning(
+            "rejected submission: no feature.attributes (%s); top-level keys=%s, feature keys=%s",
+            bad,
+            _keys(submission),
+            _keys(submission.get("feature") if isinstance(submission, dict) else None),
+        )
         raise ValueError("expected feature.attributes in the body") from bad
     if not isinstance(fields, dict):
         log.warning("rejected submission: feature.attributes is %s", type(fields).__name__)
