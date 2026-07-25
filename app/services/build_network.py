@@ -4,23 +4,22 @@ import csv
 import io
 import json
 import logging
-import re
-import shutil
-import tempfile
 import urllib.parse
 import urllib.request
-from datetime import datetime
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
-from arcgis.gis import GIS, ItemProperties, ItemTypeEnum
+from arcgis.features import FeatureLayerCollection, GeoAccessor  # GeoAccessor registers .spatial
+from arcgis.gis import GIS
 
 from app import config
 
 log = logging.getLogger(__name__)
 
-GROUP_ID = "c9eb1e35ee3443e7a1143d96d20aab78"
+# ponytail: hardcoded target. Pass it in (submission or config) when a second
+# layer needs feeding — the append below already takes the layer as an argument.
+TARGET_ITEM = "09483f5428234e31bafbf8ec4679eb93"
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -242,40 +241,30 @@ def read_sewer(full_sheet, crs):
 READERS = {"SAA": read_water, "SES": read_sewer}
 
 
-def _publish(points, lines, title, gis):
-    """Publish both layers as one hosted feature service, public and in the group.
+def _push(gdf, layer):
+    """Append a GeoDataFrame's rows to an existing hosted feature layer.
 
-    A file geodatabase is the carrier because it is the format that survives
-    the round trip with two layers and untruncated field names.
+    Geometry keeps its source (UTM) spatial reference; AGOL projects it to the
+    layer's on ingest. Attributes not in the layer's schema are ignored, missing
+    ones fill null. Returns the number of features added.
     """
-    service = re.sub(r"\W+", "_", title)  # AGOL service names take no spaces
-    with tempfile.TemporaryDirectory() as tmp:
-        gdb = Path(tmp) / f"{service}.gdb"
-        points.to_file(gdb, driver="OpenFileGDB", layer="sab_estruturas_p")
-        lines.to_file(gdb, driver="OpenFileGDB", layer="sab_estruturas_l", mode="a")
-        archive = shutil.make_archive(str(Path(tmp) / service), "zip", tmp, gdb.name)
-        source = (
-            gis.content.folders.get()  # the signed-in user's root folder
-            .add(
-                ItemProperties(
-                    title=title,
-                    item_type=ItemTypeEnum.FILE_GEODATABASE.value,
-                    tags="build_network",
-                ),
-                file=archive,
-            )
-            .result()
-        )
-
-    # ponytail: the uploaded .gdb item is kept as the service's source data.
-    # source.delete() here if the org should only hold the published service.
-    item = source.publish(publish_parameters={"name": service}, file_type="fileGeodatabase")
-    item.share(everyone=True, groups=[GROUP_ID])
-    return {"title": item.title, "id": item.id, "url": item.url}
+    # arcgis's featureset builder can't map pandas' StringDtype; plain object works.
+    strings = [c for c in gdf.columns if gdf[c].dtype == "string"]
+    if strings:
+        gdf = gdf.astype({c: object for c in strings})
+    # ponytail: one edit_features call. Chunk into batches of ~1000 if a
+    # submission ever exceeds the service's add limit.
+    result = layer.edit_features(adds=GeoAccessor.from_geodataframe(gdf).spatial.to_featureset())
+    added = result["addResults"]
+    failed = [r for r in added if not r.get("success")]
+    if failed:
+        log.error("%s: %d/%d rows rejected: %s", layer.properties.name, len(failed), len(added), failed[:3])
+        raise RuntimeError(f"{len(failed)} features rejected by {layer.properties.name}")
+    return len(added)
 
 
 def run(submission):
-    """Parse the submission's spreadsheet; publish it as hosted feature layers."""
+    """Parse the submission's spreadsheet; append its features to the target layer."""
     attributes = submission["feature"]["attributes"]
     tipo_rede = attributes["tipo_rede"]
     reader = READERS.get(tipo_rede)
@@ -298,17 +287,21 @@ def run(submission):
     full_sheet = pd.read_excel(workbook, sheet_name=None, decimal=",", thousands=".")
     points, lines = reader(full_sheet, crs)
 
-    # Labels only here, on the way into the output columns. Every decision above
-    # — reader lookup, CRS, title — stays on the codes. An unmapped code falls
-    # back to itself, so a domain the CSV does not know still publishes.
+    # Labels only here, on the way into the output columns; every decision above
+    # stayed on the codes. Column names match the target layer's schema
+    # (geocodigo, tipo_rede, nome_alt). An unmapped code falls back to itself.
     alternativa = attributes["alternativa"]
     stamp = {
-        "nome_mun": MUNICIPALITY_LABELS.get(municipality, municipality),
+        "geocodigo": municipality,
         "tipo_rede": TIPO_REDE_LABELS.get(tipo_rede, tipo_rede),
-        "alternativa": ALTERNATIVA_LABELS.get(str(alternativa), alternativa),
+        "nome_alt": ALTERNATIVA_LABELS.get(str(alternativa), alternativa),
     }
     gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
-    # local time, so the prefix reads as the submission's own clock
-    when = datetime.now().strftime("%Y%m%d%H%M%S")
-    title = f"{when}_{municipality}_{tipo_rede}_{attributes['alternativa']}"
-    return [_publish(points.assign(**stamp), lines.assign(**stamp), title, gis)]
+    flc = FeatureLayerCollection.fromitem(gis.content.get(TARGET_ITEM))
+    layers = {lyr.properties.name: lyr for lyr in flc.layers}
+    counts = {
+        "sab_estruturas_p": _push(points.assign(**stamp), layers["sab_estruturas_p"]),
+        "sab_estruturas_l": _push(lines.assign(**stamp), layers["sab_estruturas_l"]),
+    }
+    log.info("appended %s to item %s", counts, TARGET_ITEM)
+    return [{"item": TARGET_ITEM, **counts}]
