@@ -243,7 +243,7 @@ READERS = {"SAA": read_water, "SES": read_sewer}
 
 
 def _publish(points, lines, title, gis):
-    """Publish both layers as one hosted feature service, shared to the group.
+    """Publish both layers as one hosted feature service, public and in the group.
 
     A file geodatabase is the carrier because it is the format that survives
     the round trip with two layers and untruncated field names.
@@ -270,7 +270,7 @@ def _publish(points, lines, title, gis):
     # ponytail: the uploaded .gdb item is kept as the service's source data.
     # source.delete() here if the org should only hold the published service.
     item = source.publish(publish_parameters={"name": service}, file_type="fileGeodatabase")
-    item.share(groups=[GROUP_ID])
+    item.share(everyone=True, groups=[GROUP_ID])
     return {"title": item.title, "id": item.id, "url": item.url}
 
 
