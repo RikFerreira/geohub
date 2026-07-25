@@ -22,11 +22,24 @@ log = logging.getLogger(__name__)
 
 GROUP_ID = "c9eb1e35ee3443e7a1143d96d20aab78"
 
-# geocodigo -> UTM EPSG. Read once at import; the file is 5571 static rows.
-with (Path(__file__).resolve().parent.parent / "data" / "utmzones_municipality.csv").open(
-    encoding="utf-8", newline=""
-) as _zones:
-    UTM_ZONES = {row["geocodigo"]: int(row["utmepsg"]) for row in csv.DictReader(_zones)}
+DATA = Path(__file__).resolve().parent.parent / "data"
+
+# Read once at import; the file is 5571 static rows. One pass, two maps:
+# geocodigo -> UTM EPSG for the CRS, geocodigo -> nome for the output label.
+with (DATA / "utmzones_municipality.csv").open(encoding="utf-8", newline="") as _zones:
+    _rows = list(csv.DictReader(_zones))
+UTM_ZONES = {row["geocodigo"]: int(row["utmepsg"]) for row in _rows}
+MUNICIPALITY_LABELS = {row["geocodigo"]: row["nome"] for row in _rows}
+
+
+def _domain(name):
+    """code -> label from a two-column CSV. A header-only file maps nothing."""
+    with (DATA / name).open(encoding="utf-8", newline="") as handle:
+        return {row["code"]: row["label"] for row in csv.DictReader(handle)}
+
+
+TIPO_REDE_LABELS = _domain("domain_tipo_rede.csv")
+ALTERNATIVA_LABELS = _domain("domain_alternativa.csv")
 
 WATER_POINTS = ["Label", "Status do Ativo", "X", "Y"]
 WATER_LINES = ["Label", "Status do Ativo", "Diâmetro_Comercial", "geometry"]
@@ -285,10 +298,14 @@ def run(submission):
     full_sheet = pd.read_excel(workbook, sheet_name=None, decimal=",", thousands=".")
     points, lines = reader(full_sheet, crs)
 
+    # Labels only here, on the way into the output columns. Every decision above
+    # — reader lookup, CRS, title — stays on the codes. An unmapped code falls
+    # back to itself, so a domain the CSV does not know still publishes.
+    alternativa = attributes["alternativa"]
     stamp = {
-        "nome_mun": municipality,
-        "tipo_rede": tipo_rede,
-        "alternativa": attributes["alternativa"],
+        "nome_mun": MUNICIPALITY_LABELS.get(municipality, municipality),
+        "tipo_rede": TIPO_REDE_LABELS.get(tipo_rede, tipo_rede),
+        "alternativa": ALTERNATIVA_LABELS.get(str(alternativa), alternativa),
     }
     gis = GIS(config.ARCGIS_URL, config.ARCGIS_USERNAME, config.ARCGIS_PASSWORD)
     # local time, so the prefix reads as the submission's own clock
