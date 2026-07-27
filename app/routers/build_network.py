@@ -15,7 +15,7 @@ def _publish(submission: dict[str, Any]) -> None:
     """Run the pipeline off the request; the 202 is already sent, so log outcomes."""
     try:
         published = build_network.run(submission)
-        log.info("published %s", [item["title"] for item in published])
+        # log.info("appended %s", published)
     except Exception:
         # the caller is long gone — a swallowed traceback here is invisible,
         # so this log line is the only record the background job failed
