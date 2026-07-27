@@ -1,0 +1,159 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Extração de Rede</title>
+
+<link rel="stylesheet" href="style.css">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+<script src="wkb.js"></script>
+<script src="extractors_ses.js"></script>
+<script src="extractors_saa.js"></script>
+<script src="extract.js"></script>
+
+<div class="container">
+  <div class="card">
+    <h1>Extração de Rede</h1>
+    <p class="subtitle">Selecione o modelo e o cenário para gerar a rede.</p>
+
+    <form id="form">
+      <div class="field">
+        <label class="label" for="fileInput">Arquivo do modelo</label>
+        <input id="fileInput" type="file" name="file" accept=".stsw.sqlite,.wtg.sqlite">
+      </div>
+    </form>
+
+    <div class="field" id="scenarioField" hidden>
+      <label class="label" for="optionList">Cenário</label>
+      <select id="optionList"></select>
+    </div>
+
+    <form id="scenarioForm" hidden>
+      <hr>
+      <div class="field">
+        <span class="label">Tipo de rede</span>
+        <div class="options inline">
+          <label class="option"><input type="radio" name="TipoRede" value="SAA"> WaterCAD</label>
+          <label class="option"><input type="radio" name="TipoRede" value="SES"> SewerCAD</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label" for="IdMun">Município</label>
+        <select id="IdMun" name="IdMun">
+          <option value="">-Selecione-</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="label">Alternativa</span>
+        <div class="options">
+          <label class="option"><input type="radio" name="IdAlt" value="0"> Cenário atual</label>
+          <label class="option"><input type="radio" name="IdAlt" value="1"> Alternativa 1</label>
+          <label class="option"><input type="radio" name="IdAlt" value="2"> Alternativa 2</label>
+          <label class="option"><input type="radio" name="IdAlt" value="3"> Alternativa 3</label>
+        </div>
+      </div>
+
+      <button type="submit">Enviar</button>
+    </form>
+
+    <div id="message" class="message" hidden></div>
+  </div>
+</div>
+
+<script>
+let database;  // kept open from file selection through submit
+
+// Trigger a browser download for a Blob under the given filename.
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const messageEl = document.getElementById("message");
+function showMessage(text, type = "info") {
+  messageEl.textContent = text;
+  messageEl.className = "message " + type;
+  messageEl.hidden = false;
+}
+function clearMessage() { messageEl.hidden = true; }
+
+form.file.onchange = async event => {
+  const sqliteFile = event.target.files[0];
+  if (!sqliteFile) return;
+  if (!sqliteFile.name.endsWith(".stsw.sqlite") && !sqliteFile.name.endsWith(".wtg.sqlite")) {
+    showMessage("Selecione um arquivo *.stsw.sqlite (esgoto) ou *.wtg.sqlite (água).", "error");
+    event.target.value = "";
+    return;
+  }
+  try {
+    showMessage("Carregando banco de dados...", "info");
+    const fileBytes = new Uint8Array(await sqliteFile.arrayBuffer());
+    database = await openDatabase(fileBytes);
+
+    optionList.length = 0;
+    for (const s of listScenarios(database)) optionList.add(new Option(s.label, s.id));
+    scenarioField.hidden = false;
+    clearMessage();
+  } catch (err) {
+    showMessage("Erro: " + err.message, "error");
+    console.error(err);
+  }
+};
+
+let municipiosLoaded = false;
+
+async function loadMunicipios() {
+  if (municipiosLoaded) return;
+  const csv = await (await fetch("data/dtb.csv")).text();
+  const lines = csv.trim().split("\n").slice(1);  // drop header row
+  const select = scenarioForm.IdMun;
+  lines
+    .map(line => line.split(","))  // [value, label]
+    .sort((a, b) => a[1].localeCompare(b[1], "pt"))  // by label, pt-BR order
+    .forEach(([value, label]) => select.add(new Option(label, value)));
+  municipiosLoaded = true;
+}
+
+optionList.onchange = async () => {
+  if (!optionList.value) return;
+  try {
+    await loadMunicipios();
+    scenarioForm.hidden = false;
+  } catch (err) {
+    showMessage("Erro ao carregar municípios: " + err.message, "error");
+    console.error(err);
+  }
+};
+
+scenarioForm.onsubmit = async event => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(scenarioForm));
+  try {
+    showMessage("Extraindo rede...", "info");
+    const extracted = extractNetwork(database, Number(optionList.value), data.TipoRede);
+    // drop the "SAA."/"SES." prefix from each structure key
+    const structures = Object.fromEntries(
+      Object.entries(extracted).map(([key, fc]) => [key.split(".")[1], fc])
+    );
+    const payload = {
+      IdMun: data.IdMun,
+      TipoRede: data.TipoRede,
+      IdAlt: data.IdAlt,
+      scenarioId: Number(optionList.value),
+      SAA: data.TipoRede === "SAA" ? structures : {},
+      SES: data.TipoRede === "SES" ? structures : {},
+    };
+
+    showMessage("Enviando...", "info");
+    const { blob, filename } = await postResult(payload);
+    downloadBlob(blob, filename);
+    showMessage("Shapefiles gerados (verifique os Downloads).", "success");
+  } catch (err) {
+    showMessage("Erro: " + err.message, "error");
+    console.error(err);
+  }
+};
+</script>

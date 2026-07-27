@@ -1,17 +1,53 @@
 # geohub
 
-Serviço HTTP com a API de geoprocessamento, publicado em
+Monólito de extração de rede: um formulário no navegador (`frontend/`) lê o
+modelo Bentley (SQLite), reconstrói a geometria e envia GeoJSON para a API
+(`backend/`), que faz o resto do trabalho. Publicado em
 `https://geohub.rikalves.com`.
+
+## Arquitetura
+
+```
+frontend/   formulário estático (HTML + JS puro, sql.js). Extrai as estruturas
+            do modelo e monta o payload GeoJSON. Servido em /.
+backend/    API FastAPI. Recebe o payload, valida com Pydantic e publica.
+```
+
+O frontend reconstrói a geometria no cliente; o backend não mexe em coordenadas.
+
+## Contrato do payload
+
+`POST /api/v1/build_network` recebe:
+
+```json
+{
+  "IdMun": "<geocodigo>",
+  "TipoRede": "SAA | SES",
+  "IdAlt": "0",
+  "scenarioId": 1,
+  "SAA": { "<estrutura>": { "type": "FeatureCollection", "features": [] } },
+  "SES": {}
+}
+```
+
+Só a rede indicada por `TipoRede` vem preenchida; a outra fica vazia. Cada
+estrutura (`rel`, `eea`, `rede`, ...) traz suas features. Modelos em
+`backend/models.py`.
+
+A resposta é um zip (`application/zip`) com dois shapefiles: `sab_estruturas_p`
+(pontos) e `sab_estruturas_l` (linhas). Cada feição carrega os campos
+`geocodigo`, `tipo_rede`, `alt`, `estrutura` e `label`. As coordenadas passam
+como recebidas (UTM, em metros).
 
 ## Desenvolvimento local
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn backend.main:app --reload
 ```
 
-A página abre em `http://localhost:8000`, o Swagger em `/docs`.
+O formulário abre em `http://localhost:8000`, o Swagger em `/docs`.
 
 ## Imagem
 
@@ -27,18 +63,18 @@ A stack de produção vive no repositório `webgis` e consome essa imagem.
 
 ## Variáveis de ambiente
 
-| Variável      | Default  | Descrição                                          |
-| ------------- | -------- | -------------------------------------------------- |
-| `APP_NAME`    | `geohub` | Título exibido na documentação da API.             |
-| `APP_VERSION` | `dev`    | Versão informada em `/health` e no OpenAPI.        |
+| Variável              | Default  | Descrição                                            |
+| --------------------- | -------- | ---------------------------------------------------- |
+| `APP_NAME`            | `geohub` | Título exibido na documentação da API.               |
+| `APP_VERSION`         | `dev`    | Versão informada em `/health` e no OpenAPI.          |
+| `OPENFLOWS_API_TOKEN` | (vazio)  | Segredo enviado no header `X-API-Token`. Vazio = sem checagem. |
 
-## Como adicionar um endpoint
+## Pontos em aberto
 
-1. A lógica vai em `app/services/<nome>.py`, como função que recebe e devolve
-   tipos Python. Não importa FastAPI.
-2. A camada HTTP vai em `app/routers/<nome>.py`: um `APIRouter` com
-   `prefix="/api/v1/<nome>"`, os modelos Pydantic de entrada e saída, e a rota
-   que chama o service.
-3. Registre com `app.include_router(<nome>.router)` em `app/main.py`.
-
-A separação existe para que a lógica seja testável e reutilizável sem HTTP.
+- Os shapefiles saem **sem `.prj`** (CRS indefinido). Para gravar a projeção é
+  preciso o mapa geocodigo → EPSG UTM (existe no histórico do git, em
+  `app/data/utmzones_municipality.csv`).
+- `estrutura` guarda a chave crua (`eee`, `rel`, ...). O nome legível (`tipo_est`)
+  e os rótulos de `tipo_rede`/`alternativa` ainda não são resolvidos.
+- O token do frontend está fixo em `frontend/extract.js` (`API_TOKEN`); precisa
+  bater com `OPENFLOWS_API_TOKEN` no backend.
