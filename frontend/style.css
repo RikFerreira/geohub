@@ -132,6 +132,54 @@ select {
 }
 select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
+/* município autocomplete combobox */
+.combo { position: relative; }
+.combo > input[type="text"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.combo > input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.combo-list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.combo-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+.combo-item:hover,
+.combo-item.active { background: var(--accent-soft); }
+.combo-code { color: var(--muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+
 /* radio options as selectable rows */
 .options { display: flex; flex-direction: column; gap: 6px; }
 .options.inline { flex-direction: row; }

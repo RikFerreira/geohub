@@ -3,6 +3,12 @@
 <title>Extração de Rede</title>
 <link rel="icon" type="image/png" href="favicon.png">
 
+<meta property="og:title" content="wsnet — toolkit para WaterGEMS e SewerGEMS">
+<meta property="og:description" content="Ferramentas de modelagem para redes de água e esgoto.">
+<meta property="og:image" content="https://wsnet.rikalves.com/favicon.png">
+<meta property="og:url" content="https://wsnet.rikalves.com/">
+<meta property="og:type" content="website">
+
 <link rel="stylesheet" href="style.css">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
@@ -42,11 +48,13 @@
       </div>
 
       <div class="field">
-        <label class="label" for="IdMun">Município</label>
+        <label class="label" for="munInput">Município</label>
         <p class="hint">Município da rede. Define a zona UTM usada para georreferenciar a saída.</p>
-        <select id="IdMun" name="IdMun">
-          <option value="">-Selecione-</option>
-        </select>
+        <div class="combo">
+          <input id="munInput" type="text" autocomplete="off" placeholder="Digite para buscar...">
+          <input type="hidden" name="IdMun" id="IdMun">
+          <ul id="munList" class="combo-list" hidden></ul>
+        </div>
       </div>
 
       <div class="field">
@@ -148,19 +156,68 @@ form.file.onchange = async event => {
   }
 };
 
-let municipiosLoaded = false;
-
+// --- município autocomplete (filtra ~5570 itens) ---------------------------
+let municipios = [];
 async function loadMunicipios() {
-  if (municipiosLoaded) return;
+  if (municipios.length) return;
   const csv = await (await fetch("data/dtb.csv")).text();
-  const lines = csv.trim().split("\n").slice(1);  // drop header row
-  const select = scenarioForm.IdMun;
-  lines
-    .map(line => line.split(","))  // [value, label]
-    .sort((a, b) => a[1].localeCompare(b[1], "pt"))  // by label, pt-BR order
-    .forEach(([value, label]) => select.add(new Option(label, value)));
-  municipiosLoaded = true;
+  municipios = csv.trim().split("\n").slice(1).map(line => {
+    const i = line.indexOf(",");  // "code,name" — nomes não têm vírgula
+    return { code: line.slice(0, i), name: line.slice(i + 1).trim() };
+  }).sort((a, b) => a.name.localeCompare(b.name, "pt"));
 }
+
+const munInput = document.getElementById("munInput");
+const munHidden = document.getElementById("IdMun");
+const munList = document.getElementById("munList");
+const normalize = s => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+let munActive = -1;  // index of the highlighted option, -1 = none
+
+function renderMunList(query) {
+  const q = normalize(query);
+  const matches = (q ? municipios.filter(m => normalize(m.name).includes(q)) : municipios).slice(0, 60);
+  munList.replaceChildren();
+  munActive = -1;
+  for (const m of matches) {
+    const li = document.createElement("li");
+    li.className = "combo-item";
+    li._m = m;
+    const name = document.createElement("span"); name.textContent = m.name;
+    const code = document.createElement("span"); code.className = "combo-code"; code.textContent = m.code;
+    li.append(name, code);
+    li.onmousedown = e => { e.preventDefault(); selectMun(m); };  // mousedown beats input blur
+    munList.appendChild(li);
+  }
+  munList.hidden = matches.length === 0;
+}
+
+function selectMun(m) {
+  munInput.value = m.name;
+  munHidden.value = m.code;
+  munList.hidden = true;
+  munActive = -1;
+}
+
+function moveMun(delta) {
+  const items = [...munList.children];
+  if (!items.length) return;
+  munActive = (munActive + delta + items.length) % items.length;
+  items.forEach((el, i) => el.classList.toggle("active", i === munActive));
+  items[munActive].scrollIntoView({ block: "nearest" });
+}
+
+munInput.oninput = () => { munHidden.value = ""; renderMunList(munInput.value); };  // digitar invalida a escolha anterior
+munInput.onfocus = () => renderMunList(munInput.value);
+munInput.onblur = () => setTimeout(() => { munList.hidden = true; }, 120);
+munInput.onkeydown = e => {
+  if (munList.hidden && e.key === "ArrowDown") { renderMunList(munInput.value); return; }
+  if (e.key === "ArrowDown") { e.preventDefault(); moveMun(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveMun(-1); }
+  else if (e.key === "Enter" && !munList.hidden && munList.children.length) {
+    e.preventDefault();
+    selectMun(munList.children[munActive >= 0 ? munActive : 0]._m);
+  } else if (e.key === "Escape") munList.hidden = true;
+};
 
 optionList.onchange = async () => {
   if (!optionList.value) return;
@@ -177,6 +234,7 @@ scenarioForm.onsubmit = async event => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(scenarioForm));
   try {
+    if (!data.IdMun) { showMessage("Selecione um município da lista.", "error"); return; }
     showMessage("Extraindo rede...", "info");
     const { output, summary } = extractNetwork(database, Number(optionList.value), data.TipoRede);
     renderSummary(summary);
