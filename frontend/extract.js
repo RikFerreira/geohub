@@ -76,27 +76,70 @@ function loadActiveIds(db, base, activeAlt) {
 // legend is not applied here, on purpose. Field lives in the element's
 // <ElementTable>_HMIUserDefinedExtensions_Data, keyed per alternative, so GROUP
 // BY the element id and take any non-null value.
-const ACAO_COLUMNS = ["Ação", "Situação"];
+// SAA uses "Ação"/"Situação"; SES uses "ACAO_FICHA_TPF"/"situacao".
+const ACAO_COLUMNS = ["Ação", "Situação", "ACAO_FICHA_TPF", "situacao"];
 
-// First ACAO_COLUMNS name that exists in extTable, or null.
-function findAcaoColumn(db, extTable) {
+// First name from `candidates` that exists in `table`, or null (also null when
+// the table itself is missing).
+function findColumn(db, table, candidates) {
   let cols;
-  try { cols = query(db, `PRAGMA table_info("${extTable}")`).map(r => r.name); }
+  try { cols = query(db, `PRAGMA table_info("${table}")`).map(r => r.name); }
   catch { return null; }
-  return ACAO_COLUMNS.find(c => cols.includes(c)) || null;
+  return candidates.find(c => cols.includes(c)) || null;
 }
 
 // Map of DomainElementID -> raw action code for one element table (empty when
 // the table or the field is absent).
 function loadAcao(db, elementTable) {
   const extTable = `${elementTable}_HMIUserDefinedExtensions_Data`;
-  const col = findAcaoColumn(db, extTable);
+  const col = findColumn(db, extTable, ACAO_COLUMNS);
   const map = new Map();
   if (!col) return map;
   for (const r of query(db, `SELECT DomainElementID AS id, "${col}" AS acao
                              FROM "${extTable}" WHERE "${col}" IS NOT NULL
                              GROUP BY DomainElementID`)) {
     map.set(r.id, r.acao);
+  }
+  return map;
+}
+
+// --- diameter (lines) ------------------------------------------------------
+// diam_com: commercial diameter, a user field in mm (Brazilian text like "75,0"),
+// often missing per-row or per-model. diam_fis: physical diameter in feet, from
+// the element's *_Physical_Data. The backend picks commercial first, else physical.
+// Both looked up resiliently (missing table/column -> no value), since the
+// commercial column is absent in some models and would otherwise break the query.
+const DIAM_COM_COLUMNS = ["Diâmetro_Comercial", "DIAMETRO_COMERCIAL"];
+const PHYS_DIAM = {
+  IdahoPipe:    ["IdahoPipe_Physical_Data", "Physical_PipeDiameter"],
+  Conduit:      ["Conduit_Physical_Data", "ConduitDiameter"],
+  PressurePipe: ["PressurePipe_Physical_Data", "Physical_PipeDiameter"],
+};
+
+// Map of DomainElementID -> { diam_com, diam_fis } for one element table (empty
+// map for element types with no pipe diameter, e.g. nodes).
+function loadDiameter(db, elementTable) {
+  const map = new Map();
+  const phys = PHYS_DIAM[elementTable];
+  if (phys) {
+    const [table, col] = phys;
+    try {
+      for (const r of query(db, `SELECT DomainElementID AS id, MAX("${col}") AS v
+                                 FROM "${table}" GROUP BY DomainElementID`)) {
+        if (r.v != null) map.set(r.id, { diam_com: null, diam_fis: r.v });
+      }
+    } catch { /* no physical table -> leave physical unset */ }
+  }
+  const extTable = `${elementTable}_HMIUserDefinedExtensions_Data`;
+  const comCol = findColumn(db, extTable, DIAM_COM_COLUMNS);
+  if (comCol) {
+    for (const r of query(db, `SELECT DomainElementID AS id, MAX("${comCol}") AS v
+                               FROM "${extTable}" WHERE "${comCol}" IS NOT NULL AND "${comCol}" <> ''
+                               GROUP BY DomainElementID`)) {
+      const entry = map.get(r.id) || { diam_com: null, diam_fis: null };
+      entry.diam_com = r.v;
+      map.set(r.id, entry);
+    }
   }
   return map;
 }
@@ -114,6 +157,7 @@ function extractNetwork(db, scenarioId, network) {
   const geometryCache = {};
   const activeCache = {};
   const acaoCache = {};
+  const diameterCache = {};
   function geometryFor(base) {
     if (!geometryCache[base]) geometryCache[base] = loadGeometry(db, base, geomAlt);
     return geometryCache[base];
@@ -125,6 +169,10 @@ function extractNetwork(db, scenarioId, network) {
   function acaoFor(elementTable) {
     if (!(elementTable in acaoCache)) acaoCache[elementTable] = loadAcao(db, elementTable);
     return acaoCache[elementTable];
+  }
+  function diameterFor(elementTable) {
+    if (!(elementTable in diameterCache)) diameterCache[elementTable] = loadDiameter(db, elementTable);
+    return diameterCache[elementTable];
   }
 
   const output = {};
@@ -140,19 +188,29 @@ function extractNetwork(db, scenarioId, network) {
       if (extractor.activeOnly) rows = rows.filter(r => activeFor(extractor.base).has(r.id));
       if (extractor.transform) rows = extractor.transform(rows);
 
-      // Element table (for the Ação/Situação lookup) = the FROM table aliased `e`.
+      // Element table (for the Ação/Situação and diameter lookups) = the FROM
+      // table aliased `e`.
       const elementTable = extractor.elementTable || (/FROM\s+(\w+)\s+e\b/i.exec(extractor.sql) || [])[1];
       const acaoMap = elementTable ? acaoFor(elementTable) : new Map();
+      const diameterMap = elementTable ? diameterFor(elementTable) : new Map();
 
       const geometry = geometryFor(extractor.base);
       const features = [];
       for (const row of rows) {
         const blob = geometry.get(row.id);
         if (!blob) continue;  // element with no geometry in this scenario — skip
+        const diam = diameterMap.get(row.id) || {};
         features.push({
           type: "Feature",
           geometry: wkbToGeometry(blob),
-          properties: { key: extractor.key, ...row, Acao: acaoMap.has(row.id) ? acaoMap.get(row.id) : null },
+          properties: {
+            key: extractor.key,
+            tipo_est: extractor.tipo_est ?? null,
+            ...row,
+            acao: acaoMap.has(row.id) ? acaoMap.get(row.id) : null,
+            diam_com: diam.diam_com ?? null,
+            diam_fis: diam.diam_fis ?? null,
+          },
         });
       }
       output[extractor.key] = { type: "FeatureCollection", features };

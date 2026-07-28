@@ -23,7 +23,7 @@
 
 const SES_EXTRACTORS = [
   {
-    key: "SES.rede", network: "SES", base: "BaseLink",
+    key: "SES.rede", network: "SES", base: "BaseLink", tipo_est: "Rede coletora",
     esperado: "Conduto (Conduit) com rótulo iniciando em 'SB'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
@@ -32,7 +32,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'SB%'`,
   },
   {
-    key: "SES.interceptor", network: "SES", base: "BaseLink",
+    key: "SES.interceptor", network: "SES", base: "BaseLink", tipo_est: "Interceptor",
     esperado: "Conduto (Conduit) com rótulo iniciando em 'INT'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
@@ -41,7 +41,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'INT%'`,
   },
   {
-    key: "SES.emissario_final", network: "SES", base: "BaseLink",
+    key: "SES.emissario_final", network: "SES", base: "BaseLink", tipo_est: "Emissário final",
     esperado: "Conduto (Conduit) com rótulo iniciando em 'EF'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
@@ -50,7 +50,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'EF%'`,
   },
   {
-    key: "SES.linha_recalque", network: "SES", base: "BaseLink",
+    key: "SES.linha_recalque", network: "SES", base: "BaseLink", tipo_est: "Linha de recalque",
     esperado: "Tubo de pressão (PressurePipe)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM PressurePipe e
@@ -59,7 +59,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0`,
   },
   {
-    key: "SES.eee", network: "SES", base: "BaseNode",
+    key: "SES.eee", network: "SES", base: "BaseNode", tipo_est: "Estações elevatórias de esgoto",
     esperado: "Poço de sucção (WetWell)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM WetWell e
@@ -68,7 +68,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0`,
   },
   {
-    key: "SES.corpo_receptor", network: "SES", base: "BaseNode",
+    key: "SES.corpo_receptor", network: "SES", base: "BaseNode", tipo_est: "Corpo receptor",
     esperado: "Ponto de lançamento (Outfall)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Outfall e
@@ -77,7 +77,7 @@ const SES_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0`,
   },
   {
-    key: "SES.ete", network: "SES", base: "BaseNode",
+    key: "SES.ete", network: "SES", base: "BaseNode", tipo_est: "Estações de tratamento de esgoto",
     esperado: "Poço de visita (Manhole) com rótulo contendo 'ETE'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Manhole e

@@ -23,7 +23,9 @@ class Geometry(BaseModel):
 class Feature(BaseModel):
     type: Literal["Feature"]
     geometry: Geometry
-    # includes at least "key" (structure id) and "label"; rest varies per structure
+    # Consumed by build_network: "tipo_est" (schema domain value), "acao" (raw
+    # code), "label", and for lines "diam_com"/"diam_fis" (commercial mm text /
+    # physical feet). Also carries "key"; rest varies per structure.
     properties: dict[str, Any]
 
 

@@ -12,7 +12,7 @@
 const SAA_EXTRACTORS = [
   // Reservatórios (storage tanks) — split by label prefix.
   {
-    key: "SAA.rel", network: "SAA", base: "BaseIdahoNode",
+    key: "SAA.rel", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios elevados",
     esperado: "Reservatório (Tank) com rótulo iniciando em 'REL'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
@@ -21,7 +21,7 @@ const SAA_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'REL%'`,
   },
   {
-    key: "SAA.rap", network: "SAA", base: "BaseIdahoNode",
+    key: "SAA.rap", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios apoiados",
     esperado: "Reservatório (Tank) com rótulo iniciando em 'RAP'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
@@ -30,7 +30,7 @@ const SAA_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'RAP%'`,
   },
   {
-    key: "SAA.rse", network: "SAA", base: "BaseIdahoNode",
+    key: "SAA.rse", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios semienterrados",
     esperado: "Reservatório (Tank) com rótulo iniciando em 'RSE'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
@@ -41,7 +41,7 @@ const SAA_EXTRACTORS = [
 
   // Estações elevatórias de água (EEA) — pumps, active only.
   {
-    key: "SAA.eea", network: "SAA", base: "BaseDirectedNode", activeOnly: true,
+    key: "SAA.eea", network: "SAA", base: "BaseDirectedNode", activeOnly: true, tipo_est: "Estações elevatórias de água",
     esperado: "Bomba (Pump) ativa no cenário",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM StandardPump e
@@ -52,7 +52,7 @@ const SAA_EXTRACTORS = [
 
   // Estações de tratamento de água (ETA) — reservoir boundary, label "ETA", active only.
   {
-    key: "SAA.eta", network: "SAA", base: "BaseIdahoNode", activeOnly: true,
+    key: "SAA.eta", network: "SAA", base: "BaseIdahoNode", activeOnly: true, tipo_est: "Estações de tratamento de água",
     esperado: "Reservatório-fonte (Reservoir) ativo com rótulo iniciando em 'ETA'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoReservoir e
@@ -64,7 +64,7 @@ const SAA_EXTRACTORS = [
   // Poço tubular / captação — the other reservoir-boundary sources (HANDOFF: distinguish
   // from ETA by label; unconfirmed). Here they are river intakes ("Captação ...").
   {
-    key: "SAA.captacao", network: "SAA", base: "BaseIdahoNode",
+    key: "SAA.captacao", network: "SAA", base: "BaseIdahoNode", tipo_est: "Poço tubular",
     esperado: "Reservatório-fonte (Reservoir) sem rótulo iniciando em 'ETA'",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoReservoir e
@@ -75,7 +75,7 @@ const SAA_EXTRACTORS = [
 
   // Válvula redutora de pressão (VRP) — PRV, active only.
   {
-    key: "SAA.vrp", network: "SAA", base: "BaseDirectedNode", activeOnly: true,
+    key: "SAA.vrp", network: "SAA", base: "BaseDirectedNode", activeOnly: true, tipo_est: "Válvula redutora de pressão",
     esperado: "Válvula redutora de pressão (PRV) ativa no cenário",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM PRV e
@@ -89,7 +89,7 @@ const SAA_EXTRACTORS = [
   // GROUP BY the element id because that extension table is keyed per alternative
   // (a few pipes carry the field on more than one alternative row).
   {
-    key: "SAA.rede", network: "SAA", base: "BaseLink",
+    key: "SAA.rede", network: "SAA", base: "BaseLink", tipo_est: "Rede de distribuição",
     esperado: "Tubo (IdahoPipe) com campo 'Classe_Macro' = 0 — extensão definida pelo usuário no modelo",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoPipe e
@@ -100,7 +100,7 @@ const SAA_EXTRACTORS = [
           GROUP BY e.DomainElementID`,
   },
   {
-    key: "SAA.adutora", network: "SAA", base: "BaseLink",
+    key: "SAA.adutora", network: "SAA", base: "BaseLink", tipo_est: "Adutora",
     esperado: "Tubo (IdahoPipe) com campo 'Classe_Macro' = 1 — extensão definida pelo usuário no modelo",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoPipe e
