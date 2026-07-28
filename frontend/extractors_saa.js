@@ -6,37 +6,48 @@
 // description of how the data must be for this structure to be found. It is shown
 // in the extraction summary when a structure comes back empty or errors.
 //
-// This sample model verified: tanks REL/RAP/RSE = elevado/apoiado/semienterrado,
-// reservoirs "ETA %" vs raw-water intakes, pumps EEA, PRV = VRP.
+// Discrimination is by user-defined enum, never by label prefix:
+//   tanks     -> Tipo_de_Reservatório (1 semi / 2 apoiado / 3 elevado)
+//   reservoirs-> Tipo_de_Fonte (0 ETA / 1 Poço tubular)
+//   pipes     -> Classe_Macro (0 rede / 1 adutora)
+// Pumps (EEA) and PRV (VRP) are by element type, active in the scenario.
 
 const SAA_EXTRACTORS = [
-  // Reservatórios (storage tanks) — split by label prefix.
+  // Reservatórios (storage tanks) — split by the user field Tipo_de_Reservatório
+  // (enum: 1 = Semienterrado, 2 = Apoiado, 3 = Elevado; 0 = Enterrado, unused).
+  // The label prefix (REL/RAP/RSE) is unreliable, so the enum is authoritative.
   {
     key: "SAA.rel", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios elevados",
-    esperado: "Reservatório (Tank) com rótulo iniciando em 'REL'",
+    esperado: "Reservatório (Tank) com campo 'Tipo_de_Reservatório' = 3 (Elevado)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'REL%'`,
+          JOIN IdahoTank_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Reservatório" = 3
+          GROUP BY e.DomainElementID`,
   },
   {
     key: "SAA.rap", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios apoiados",
-    esperado: "Reservatório (Tank) com rótulo iniciando em 'RAP'",
+    esperado: "Reservatório (Tank) com campo 'Tipo_de_Reservatório' = 2 (Apoiado)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'RAP%'`,
+          JOIN IdahoTank_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Reservatório" = 2
+          GROUP BY e.DomainElementID`,
   },
   {
     key: "SAA.rse", network: "SAA", base: "BaseIdahoNode", tipo_est: "Reservatórios semienterrados",
-    esperado: "Reservatório (Tank) com rótulo iniciando em 'RSE'",
+    esperado: "Reservatório (Tank) com campo 'Tipo_de_Reservatório' = 1 (Semienterrado)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoTank e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'RSE%'`,
+          JOIN IdahoTank_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Reservatório" = 1
+          GROUP BY e.DomainElementID`,
   },
 
   // Estações elevatórias de água (EEA) — pumps, active only.
@@ -50,27 +61,30 @@ const SAA_EXTRACTORS = [
           WHERE m.IsDeleted = 0 AND d.IsPrototype = 0`,
   },
 
-  // Estações de tratamento de água (ETA) — reservoir boundary, label "ETA", active only.
+  // Estações de tratamento de água (ETA) — Reservoir with Tipo_de_Fonte = 0, active.
   {
     key: "SAA.eta", network: "SAA", base: "BaseIdahoNode", activeOnly: true, tipo_est: "Estações de tratamento de água",
-    esperado: "Reservatório-fonte (Reservoir) ativo com rótulo iniciando em 'ETA'",
+    esperado: "Reservatório-fonte (Reservoir) ativo com campo 'Tipo_de_Fonte' = 0 (ETA)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoReservoir e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'ETA%'`,
+          JOIN IdahoReservoir_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Fonte" = 0
+          GROUP BY e.DomainElementID`,
   },
 
-  // Poço tubular / captação — the other reservoir-boundary sources (HANDOFF: distinguish
-  // from ETA by label; unconfirmed). Here they are river intakes ("Captação ...").
+  // Poço tubular / captação — Reservoir with Tipo_de_Fonte = 1.
   {
     key: "SAA.captacao", network: "SAA", base: "BaseIdahoNode", tipo_est: "Poço tubular",
-    esperado: "Reservatório-fonte (Reservoir) sem rótulo iniciando em 'ETA'",
+    esperado: "Reservatório-fonte (Reservoir) com campo 'Tipo_de_Fonte' = 1 (Poço tubular)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM IdahoReservoir e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label NOT LIKE 'ETA%'`,
+          JOIN IdahoReservoir_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Fonte" = 1
+          GROUP BY e.DomainElementID`,
   },
 
   // Válvula redutora de pressão (VRP) — PRV, active only.

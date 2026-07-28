@@ -24,30 +24,36 @@
 const SES_EXTRACTORS = [
   {
     key: "SES.rede", network: "SES", base: "BaseLink", tipo_est: "Rede coletora",
-    esperado: "Conduto (Conduit) com rótulo iniciando em 'SB'",
+    esperado: "Conduto (Conduit) com campo 'Tipo_de_Rede' = 0 (Rede coletora)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'SB%'`,
+          JOIN Conduit_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Rede" = 0
+          GROUP BY e.DomainElementID`,
   },
   {
     key: "SES.interceptor", network: "SES", base: "BaseLink", tipo_est: "Interceptor",
-    esperado: "Conduto (Conduit) com rótulo iniciando em 'INT'",
+    esperado: "Conduto (Conduit) com campo 'Tipo_de_Rede' = 1 (Interceptor)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'INT%'`,
+          JOIN Conduit_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Rede" = 1
+          GROUP BY e.DomainElementID`,
   },
   {
     key: "SES.emissario_final", network: "SES", base: "BaseLink", tipo_est: "Emissário final",
-    esperado: "Conduto (Conduit) com rótulo iniciando em 'EF'",
+    esperado: "Conduto (Conduit) com campo 'Tipo_de_Rede' = 2 (Emissário final)",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Conduit e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE 'EF%'`,
+          JOIN Conduit_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Tipo_de_Rede" = 2
+          GROUP BY e.DomainElementID`,
   },
   {
     key: "SES.linha_recalque", network: "SES", base: "BaseLink", tipo_est: "Linha de recalque",
@@ -78,11 +84,13 @@ const SES_EXTRACTORS = [
   },
   {
     key: "SES.ete", network: "SES", base: "BaseNode", tipo_est: "Estações de tratamento de esgoto",
-    esperado: "Poço de visita (Manhole) com rótulo contendo 'ETE'",
+    esperado: "Poço de visita (Manhole) com campo 'Estrutura_ETE' = 1",
     sql: `SELECT e.DomainElementID AS id, m.Label AS label
           FROM Manhole e
           JOIN HMIModelingElement m ON m.ElementID = e.DomainElementID
           JOIN HMIDomainElement d  ON d.DomainElementID = e.DomainElementID
-          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND m.Label LIKE '%ETE%'`,
+          JOIN Manhole_HMIUserDefinedExtensions_Data x ON x.DomainElementID = e.DomainElementID
+          WHERE m.IsDeleted = 0 AND d.IsPrototype = 0 AND x."Estrutura_ETE" = 1
+          GROUP BY e.DomainElementID`,
   },
 ];
