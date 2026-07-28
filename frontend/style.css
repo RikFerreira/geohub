@@ -217,6 +217,22 @@ button {
 button:hover { filter: brightness(1.07); }
 button:active { filter: brightness(0.95); }
 
+/* download link (secondary action) */
+.doc-link {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.12s;
+}
+.doc-link:hover { border-color: var(--accent); }
+
 /* message area */
 .message {
   margin-top: 20px;
