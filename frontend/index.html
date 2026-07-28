@@ -10,8 +10,8 @@
 <script src="extractors_saa.js"></script>
 <script src="extract.js"></script>
 
-<div class="container">
-  <div class="card">
+<div class="layout">
+  <div class="card form-card">
     <h1>Extração de Rede</h1>
     <p class="subtitle">Selecione o modelo e o cenário para gerar a rede.</p>
 
@@ -63,7 +63,13 @@
     </form>
 
     <div id="message" class="message" hidden></div>
-    <div id="summary" class="summary" hidden></div>
+  </div>
+
+  <div class="card summary-card">
+    <h2 class="summary-title">Resumo da extração</h2>
+    <div id="summary" class="summary">
+      <p class="summary-empty">Os resultados por estrutura aparecerão aqui após o envio.</p>
+    </div>
   </div>
 </div>
 
@@ -91,11 +97,6 @@ function clearMessage() { messageEl.hidden = true; }
 const summaryEl = document.getElementById("summary");
 function renderSummary(summary) {
   summaryEl.replaceChildren();
-  const title = document.createElement("h2");
-  title.className = "summary-title";
-  title.textContent = "Resumo da extração";
-  summaryEl.appendChild(title);
-
   for (const s of summary) {
     const status = s.error ? "erro" : (s.count > 0 ? "ok" : "vazio");
     const item = document.createElement("div");
@@ -121,7 +122,6 @@ function renderSummary(summary) {
     }
     summaryEl.appendChild(item);
   }
-  summaryEl.hidden = false;
 }
 
 form.file.onchange = async event => {

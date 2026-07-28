@@ -25,49 +25,77 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
-  padding: 40px 16px;
+  height: 100vh;
+  overflow: hidden;
+  padding: 24px;
   display: flex;
   justify-content: center;
-  align-items: flex-start;
+  align-items: center;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
 }
 
-.container { width: 100%; max-width: 520px; }
+/* two columns: form on the left, extraction log on the right */
+.layout {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+  max-width: 940px;
+  max-height: 100%;
+  align-items: stretch;
+}
 
 .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 28px;
+  padding: 18px 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.05);
 }
 
+.form-card { flex: 0 0 460px; overflow-y: auto; }
+
+.summary-card {
+  flex: 1 1 auto;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;  /* header stays put; the list scrolls inside */
+}
+
+/* stack on narrow screens, and let the page scroll there */
+@media (max-width: 820px) {
+  body { height: auto; min-height: 100vh; overflow: auto; align-items: flex-start; }
+  .layout { flex-direction: column; max-width: 520px; max-height: none; }
+  .form-card { flex: none; overflow: visible; }
+  .summary-card { overflow: visible; }
+  .summary { overflow-y: visible; }
+}
+
 h1 {
-  margin: 0 0 4px;
-  font-size: 1.4rem;
+  margin: 0 0 2px;
+  font-size: 1.25rem;
   font-weight: 650;
 }
 
-.subtitle { margin: 0 0 24px; color: var(--muted); font-size: 0.9rem; }
+.subtitle { margin: 0 0 10px; color: var(--muted); font-size: 0.9rem; }
 
-.field { margin-bottom: 22px; }
+.field { margin-bottom: 10px; }
 .field:last-of-type { margin-bottom: 0; }
 
 .field > label.label,
 .field > .label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   font-weight: 600;
   font-size: 0.9rem;
 }
 
 /* per-field helper text, between the label and its control */
 .hint {
-  margin: -2px 0 10px;
+  margin: -2px 0 6px;
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.4;
@@ -105,7 +133,7 @@ select {
 select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 /* radio options as selectable rows */
-.options { display: flex; flex-direction: column; gap: 8px; }
+.options { display: flex; flex-direction: column; gap: 6px; }
 .options.inline { flex-direction: row; }
 .options.inline .option { flex: 1; }
 
@@ -113,7 +141,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 7px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
@@ -153,11 +181,12 @@ button:active { filter: brightness(0.95); }
 .message.success { background: #e9f7ef; color: #1b7a43; border-color: #b7e4c7; }
 .message.error   { background: #fdecec; color: #b42318; border-color: #f5c2c0; }
 
-hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 
 /* extraction summary */
-.summary { margin-top: 20px; }
-.summary-title { margin: 0 0 12px; font-size: 1rem; font-weight: 650; }
+.summary-title { margin: 0 0 12px; font-size: 1rem; font-weight: 650; flex: 0 0 auto; }
+.summary { flex: 1 1 auto; overflow-y: auto; }
+.summary-empty { margin: 0; color: var(--muted); font-size: 0.88rem; }
 
 .summary-item {
   padding: 10px 12px;
