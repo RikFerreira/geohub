@@ -128,14 +128,13 @@ function extractNetwork(db, scenarioId, network) {
 // --- backend call ----------------------------------------------------------
 
 const API_URL = "/api/v1/build_network";  // served by the same backend (monolith)
-const API_TOKEN = "changeme";  // must match OPENFLOWS_API_TOKEN on the backend
 
 // Posts the payload; the backend answers with a zip of the two shapefiles.
 // Returns { blob, filename } for the caller to download.
 async function postResult(payload) {
   const res = await fetch(API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-API-Token": API_TOKEN },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);

@@ -1,4 +1,4 @@
-# geohub
+# wsnet
 
 Monólito de extração de rede: um formulário no navegador (`frontend/`) lê o
 modelo Bentley (SQLite), reconstrói a geometria e envia GeoJSON para a API
@@ -57,22 +57,21 @@ O formulário abre em `http://localhost:8000`, o Swagger em `/docs`.
 ## Imagem
 
 ```bash
-docker build -t geohub .
-docker run --rm -p 8000:8000 geohub
+docker build -t wsnet .
+docker run --rm -p 8000:8000 wsnet
 ```
 
 ## Publicação
 
-Push na `main` dispara o workflow, que publica em `ghcr.io/rikferreira/geohub`.
+Push na `main` dispara o workflow, que publica em `ghcr.io/rikferreira/wsnet`.
 A stack de produção vive no repositório `webgis` e consome essa imagem.
 
 ## Variáveis de ambiente
 
 | Variável              | Default  | Descrição                                            |
 | --------------------- | -------- | ---------------------------------------------------- |
-| `APP_NAME`            | `geohub` | Título exibido na documentação da API.               |
+| `APP_NAME`            | `wsnet`  | Título exibido na documentação da API.               |
 | `APP_VERSION`         | `dev`    | Versão informada em `/health` e no OpenAPI.          |
-| `OPENFLOWS_API_TOKEN` | (vazio)  | Segredo enviado no header `X-API-Token`. Vazio = sem checagem. |
 
 A zona UTM de origem vem de `backend/data/utmzones_municipality.csv` (lista
 completa do IBGE). Um geocodigo fora da tabela é registrado no log; sem a zona
@@ -82,5 +81,3 @@ não há como reprojetar, então as coordenadas saem como estão e sem `.prj`.
 
 - `estrutura` guarda a chave crua (`eee`, `rel`, ...). O nome legível (`tipo_est`)
   e os rótulos de `tipo_rede`/`alternativa` ainda não são resolvidos.
-- O token do frontend está fixo em `frontend/extract.js` (`API_TOKEN`); precisa
-  bater com `OPENFLOWS_API_TOKEN` no backend.
