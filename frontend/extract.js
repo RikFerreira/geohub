@@ -69,6 +69,38 @@ function loadActiveIds(db, base, activeAlt) {
   return ids;
 }
 
+// --- Ação/Situação (raw code) ---------------------------------------------
+// The "action" is a user-defined field whose NAME varies by model (Bragança:
+// "Ação"; most others: "Situação") and whose integer code MEANING also varies
+// (0 and 2 are swapped between models). We emit the raw code as stored — the
+// legend is not applied here, on purpose. Field lives in the element's
+// <ElementTable>_HMIUserDefinedExtensions_Data, keyed per alternative, so GROUP
+// BY the element id and take any non-null value.
+const ACAO_COLUMNS = ["Ação", "Situação"];
+
+// First ACAO_COLUMNS name that exists in extTable, or null.
+function findAcaoColumn(db, extTable) {
+  let cols;
+  try { cols = query(db, `PRAGMA table_info("${extTable}")`).map(r => r.name); }
+  catch { return null; }
+  return ACAO_COLUMNS.find(c => cols.includes(c)) || null;
+}
+
+// Map of DomainElementID -> raw action code for one element table (empty when
+// the table or the field is absent).
+function loadAcao(db, elementTable) {
+  const extTable = `${elementTable}_HMIUserDefinedExtensions_Data`;
+  const col = findAcaoColumn(db, extTable);
+  const map = new Map();
+  if (!col) return map;
+  for (const r of query(db, `SELECT DomainElementID AS id, "${col}" AS acao
+                             FROM "${extTable}" WHERE "${col}" IS NOT NULL
+                             GROUP BY DomainElementID`)) {
+    map.set(r.id, r.acao);
+  }
+  return map;
+}
+
 // --- the extraction --------------------------------------------------------
 
 // Returns { output, summary } for the chosen scenario + network.
@@ -81,6 +113,7 @@ function extractNetwork(db, scenarioId, network) {
   // geometry + active sets loaded once per base class, reused across extractors.
   const geometryCache = {};
   const activeCache = {};
+  const acaoCache = {};
   function geometryFor(base) {
     if (!geometryCache[base]) geometryCache[base] = loadGeometry(db, base, geomAlt);
     return geometryCache[base];
@@ -88,6 +121,10 @@ function extractNetwork(db, scenarioId, network) {
   function activeFor(base) {
     if (!activeCache[base]) activeCache[base] = loadActiveIds(db, base, activeAlt);
     return activeCache[base];
+  }
+  function acaoFor(elementTable) {
+    if (!(elementTable in acaoCache)) acaoCache[elementTable] = loadAcao(db, elementTable);
+    return acaoCache[elementTable];
   }
 
   const output = {};
@@ -103,6 +140,10 @@ function extractNetwork(db, scenarioId, network) {
       if (extractor.activeOnly) rows = rows.filter(r => activeFor(extractor.base).has(r.id));
       if (extractor.transform) rows = extractor.transform(rows);
 
+      // Element table (for the Ação/Situação lookup) = the FROM table aliased `e`.
+      const elementTable = extractor.elementTable || (/FROM\s+(\w+)\s+e\b/i.exec(extractor.sql) || [])[1];
+      const acaoMap = elementTable ? acaoFor(elementTable) : new Map();
+
       const geometry = geometryFor(extractor.base);
       const features = [];
       for (const row of rows) {
@@ -111,7 +152,7 @@ function extractNetwork(db, scenarioId, network) {
         features.push({
           type: "Feature",
           geometry: wkbToGeometry(blob),
-          properties: { key: extractor.key, ...row },
+          properties: { key: extractor.key, ...row, Acao: acaoMap.has(row.id) ? acaoMap.get(row.id) : null },
         });
       }
       output[extractor.key] = { type: "FeatureCollection", features };
