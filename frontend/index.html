@@ -18,12 +18,14 @@
     <form id="form">
       <div class="field">
         <label class="label" for="fileInput">Arquivo do modelo</label>
+        <p class="hint">Banco de dados do modelo Bentley: .wtg.sqlite (água) ou .stsw.sqlite (esgoto).</p>
         <input id="fileInput" type="file" name="file" accept=".sqlite">
       </div>
     </form>
 
     <div class="field" id="scenarioField" hidden>
       <label class="label" for="optionList">Cenário</label>
+      <p class="hint">Cenário do modelo a extrair. A lista é preenchida a partir do arquivo carregado.</p>
       <select id="optionList"></select>
     </div>
 
@@ -31,6 +33,7 @@
       <hr>
       <div class="field">
         <span class="label">Tipo de rede</span>
+        <p class="hint">Água (WaterCAD) ou esgoto (SewerCAD). Deve corresponder ao arquivo carregado.</p>
         <div class="options inline">
           <label class="option"><input type="radio" name="TipoRede" value="SAA"> WaterCAD</label>
           <label class="option"><input type="radio" name="TipoRede" value="SES"> SewerCAD</label>
@@ -39,6 +42,7 @@
 
       <div class="field">
         <label class="label" for="IdMun">Município</label>
+        <p class="hint">Município da rede. Define a zona UTM usada para georreferenciar a saída.</p>
         <select id="IdMun" name="IdMun">
           <option value="">-Selecione-</option>
         </select>
@@ -46,6 +50,7 @@
 
       <div class="field">
         <span class="label">Alternativa</span>
+        <p class="hint">Versão do projeto a extrair: o cenário atual ou uma das alternativas propostas.</p>
         <div class="options">
           <label class="option"><input type="radio" name="IdAlt" value="0"> Cenário atual</label>
           <label class="option"><input type="radio" name="IdAlt" value="1"> Alternativa 1</label>

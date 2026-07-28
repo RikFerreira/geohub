@@ -65,6 +65,14 @@ h1 {
   font-size: 0.9rem;
 }
 
+/* per-field helper text, between the label and its control */
+.hint {
+  margin: -2px 0 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 /* file input */
 input[type="file"] {
   width: 100%;
