@@ -36,8 +36,13 @@ estrutura (`rel`, `eea`, `rede`, ...) traz suas features. Modelos em
 
 A resposta é um zip (`application/zip`) com dois shapefiles: `sab_estruturas_p`
 (pontos) e `sab_estruturas_l` (linhas). Cada feição carrega os campos
-`geocodigo`, `tipo_rede`, `alt`, `estrutura` e `label`. As coordenadas passam
-como recebidas (UTM, em metros).
+`geocodigo`, `tipo_rede`, `alt`, `estrutura` e `label`.
+
+As coordenadas de origem são UTM **em pés** (padrão dos modelos Bentley), sem CRS
+declarado. O backend converte pés → metros, usa o mapa geocodigo → zona UTM só
+para lê-las corretamente e reprojeta a saída para SIRGAS 2000 geográfico
+(**EPSG:4674**) — o `.prj` de ambos os shapefiles. Um ponto reprojetado fora do
+Brasil é registrado no log (sinal de unidade ou zona lida errado).
 
 ## Desenvolvimento local
 
@@ -69,11 +74,12 @@ A stack de produção vive no repositório `webgis` e consome essa imagem.
 | `APP_VERSION`         | `dev`    | Versão informada em `/health` e no OpenAPI.          |
 | `OPENFLOWS_API_TOKEN` | (vazio)  | Segredo enviado no header `X-API-Token`. Vazio = sem checagem. |
 
+A zona UTM de origem vem de `backend/data/utmzones_municipality.csv` (lista
+completa do IBGE). Um geocodigo fora da tabela é registrado no log; sem a zona
+não há como reprojetar, então as coordenadas saem como estão e sem `.prj`.
+
 ## Pontos em aberto
 
-- Os shapefiles saem **sem `.prj`** (CRS indefinido). Para gravar a projeção é
-  preciso o mapa geocodigo → EPSG UTM (existe no histórico do git, em
-  `app/data/utmzones_municipality.csv`).
 - `estrutura` guarda a chave crua (`eee`, `rel`, ...). O nome legível (`tipo_est`)
   e os rótulos de `tipo_rede`/`alternativa` ainda não são resolvidos.
 - O token do frontend está fixo em `frontend/extract.js` (`API_TOKEN`); precisa

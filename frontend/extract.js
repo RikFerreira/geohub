@@ -71,7 +71,9 @@ function loadActiveIds(db, base, activeAlt) {
 
 // --- the extraction --------------------------------------------------------
 
-// Returns { "SES.rede": <FeatureCollection>, ... } for the chosen scenario + network.
+// Returns { output, summary } for the chosen scenario + network.
+//   output  { "SES.rede": <FeatureCollection>, ... }
+//   summary [ { key, esperado, count, error }, ... ] — one per structure, for the UI.
 function extractNetwork(db, scenarioId, network) {
   const geomAlt = resolveAlternative(db, scenarioId, 1);
   const activeAlt = resolveAlternative(db, scenarioId, 3);
@@ -89,27 +91,38 @@ function extractNetwork(db, scenarioId, network) {
   }
 
   const output = {};
+  const summary = [];
   for (const extractor of EXTRACTORS) {
     if (extractor.network !== network) continue;
 
-    let rows = query(db, extractor.sql);
-    if (extractor.activeOnly) rows = rows.filter(r => activeFor(extractor.base).has(r.id));
-    if (extractor.transform) rows = extractor.transform(rows);
+    // Each extractor is isolated. A broken query — e.g. a user-defined column
+    // this model doesn't have (Classe_Macro) — is recorded as an error and left
+    // with an empty collection so every other structure still comes through.
+    try {
+      let rows = query(db, extractor.sql);
+      if (extractor.activeOnly) rows = rows.filter(r => activeFor(extractor.base).has(r.id));
+      if (extractor.transform) rows = extractor.transform(rows);
 
-    const geometry = geometryFor(extractor.base);
-    const features = [];
-    for (const row of rows) {
-      const blob = geometry.get(row.id);
-      if (!blob) continue;  // element with no geometry in this scenario — skip
-      features.push({
-        type: "Feature",
-        geometry: wkbToGeometry(blob),
-        properties: { key: extractor.key, ...row },
-      });
+      const geometry = geometryFor(extractor.base);
+      const features = [];
+      for (const row of rows) {
+        const blob = geometry.get(row.id);
+        if (!blob) continue;  // element with no geometry in this scenario — skip
+        features.push({
+          type: "Feature",
+          geometry: wkbToGeometry(blob),
+          properties: { key: extractor.key, ...row },
+        });
+      }
+      output[extractor.key] = { type: "FeatureCollection", features };
+      summary.push({ key: extractor.key, esperado: extractor.esperado, count: features.length, error: null });
+    } catch (err) {
+      output[extractor.key] = { type: "FeatureCollection", features: [] };
+      summary.push({ key: extractor.key, esperado: extractor.esperado, count: 0, error: err.message });
+      console.warn(`Extrator ${extractor.key} falhou: ${err.message}`);
     }
-    output[extractor.key] = { type: "FeatureCollection", features };
   }
-  return output;
+  return { output, summary };
 }
 
 // --- backend call ----------------------------------------------------------

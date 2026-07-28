@@ -147,4 +147,37 @@ button:active { filter: brightness(0.95); }
 
 hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
 
+/* extraction summary */
+.summary { margin-top: 20px; }
+.summary-title { margin: 0 0 12px; font-size: 1rem; font-weight: 650; }
+
+.summary-item {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.summary-item:last-child { margin-bottom: 0; }
+
+.summary-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.summary-name { font-weight: 600; }
+.summary-badge { font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.summary-hint { margin-top: 6px; font-size: 0.82rem; color: var(--muted); }
+
+/* green = 1+ features, yellow = 0 features, red = read failure */
+.summary-item.ok    { border-left-color: #22a35a; background: rgba(34, 163, 90, 0.08); }
+.summary-item.ok    .summary-badge { color: #1b7a43; }
+.summary-item.vazio { border-left-color: #d99e30; background: rgba(217, 158, 48, 0.10); }
+.summary-item.vazio .summary-badge { color: #b7791f; }
+.summary-item.erro  { border-left-color: #e5534b; background: rgba(229, 83, 75, 0.10); }
+.summary-item.erro  .summary-badge { color: #d1362c; }
+
+@media (prefers-color-scheme: dark) {
+  .summary-item.ok    .summary-badge { color: #4ade80; }
+  .summary-item.vazio .summary-badge { color: #f0c000; }
+  .summary-item.erro  .summary-badge { color: #ff7a70; }
+}
+
 [hidden] { display: none !important; }

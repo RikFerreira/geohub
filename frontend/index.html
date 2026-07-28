@@ -18,7 +18,7 @@
     <form id="form">
       <div class="field">
         <label class="label" for="fileInput">Arquivo do modelo</label>
-        <input id="fileInput" type="file" name="file" accept=".stsw.sqlite,.wtg.sqlite">
+        <input id="fileInput" type="file" name="file" accept=".sqlite">
       </div>
     </form>
 
@@ -58,6 +58,7 @@
     </form>
 
     <div id="message" class="message" hidden></div>
+    <div id="summary" class="summary" hidden></div>
   </div>
 </div>
 
@@ -79,6 +80,44 @@ function showMessage(text, type = "info") {
   messageEl.hidden = false;
 }
 function clearMessage() { messageEl.hidden = true; }
+
+// Render the per-structure extraction summary. Green = 1+ feições, yellow = 0,
+// red = falha na leitura. Failed/empty rows explain how the data is expected.
+const summaryEl = document.getElementById("summary");
+function renderSummary(summary) {
+  summaryEl.replaceChildren();
+  const title = document.createElement("h2");
+  title.className = "summary-title";
+  title.textContent = "Resumo da extração";
+  summaryEl.appendChild(title);
+
+  for (const s of summary) {
+    const status = s.error ? "erro" : (s.count > 0 ? "ok" : "vazio");
+    const item = document.createElement("div");
+    item.className = "summary-item " + status;
+
+    const head = document.createElement("div");
+    head.className = "summary-head";
+    const name = document.createElement("span");
+    name.className = "summary-name";
+    name.textContent = s.key;
+    const badge = document.createElement("span");
+    badge.className = "summary-badge";
+    badge.textContent = s.error ? "falha" : (s.count === 1 ? "1 feição" : `${s.count} feições`);
+    head.append(name, badge);
+    item.appendChild(head);
+
+    if (status !== "ok") {
+      const hint = document.createElement("div");
+      hint.className = "summary-hint";
+      hint.textContent =
+        (s.error ? "Falha na leitura. Esperado: " : "Nenhuma feição encontrada. Esperado: ") + s.esperado;
+      item.appendChild(hint);
+    }
+    summaryEl.appendChild(item);
+  }
+  summaryEl.hidden = false;
+}
 
 form.file.onchange = async event => {
   const sqliteFile = event.target.files[0];
@@ -133,10 +172,11 @@ scenarioForm.onsubmit = async event => {
   const data = Object.fromEntries(new FormData(scenarioForm));
   try {
     showMessage("Extraindo rede...", "info");
-    const extracted = extractNetwork(database, Number(optionList.value), data.TipoRede);
+    const { output, summary } = extractNetwork(database, Number(optionList.value), data.TipoRede);
+    renderSummary(summary);
     // drop the "SAA."/"SES." prefix from each structure key
     const structures = Object.fromEntries(
-      Object.entries(extracted).map(([key, fc]) => [key.split(".")[1], fc])
+      Object.entries(output).map(([key, fc]) => [key.split(".")[1], fc])
     );
     const payload = {
       IdMun: data.IdMun,
