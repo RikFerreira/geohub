@@ -14,9 +14,9 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
 <script src="wkb.js?v=1"></script>
-<script src="extractors_ses.js?v=2"></script>
-<script src="extractors_saa.js?v=2"></script>
-<script src="extract.js?v=2"></script>
+<script src="extractors_ses.js?v=3"></script>
+<script src="extractors_saa.js?v=3"></script>
+<script src="extract.js?v=4"></script>
 
 <div class="layout">
   <div class="card form-card">
@@ -104,13 +104,14 @@ function showMessage(text, type = "info") {
 }
 function clearMessage() { messageEl.hidden = true; }
 
-// Render the per-structure extraction summary. Green = 1+ feições, yellow = 0,
-// red = falha na leitura. Failed/empty rows explain how the data is expected.
+// Render the per-structure extraction summary. Green = 1+ feições, yellow = 0 ou
+// aviso (campo ausente, classificado no tipo padrão), red = falha na leitura.
+// A warning forces yellow even with feições, and explains what happened.
 const summaryEl = document.getElementById("summary");
 function renderSummary(summary) {
   summaryEl.replaceChildren();
   for (const s of summary) {
-    const status = s.error ? "erro" : (s.count > 0 ? "ok" : "vazio");
+    const status = s.error ? "erro" : (s.warning || s.count === 0 ? "vazio" : "ok");
     const item = document.createElement("div");
     item.className = "summary-item " + status;
 
@@ -128,8 +129,9 @@ function renderSummary(summary) {
     if (status !== "ok") {
       const hint = document.createElement("div");
       hint.className = "summary-hint";
-      hint.textContent =
-        (s.error ? "Falha na leitura. Esperado: " : "Nenhuma feição encontrada. Esperado: ") + s.esperado;
+      hint.textContent = s.error ? "Falha na leitura. Esperado: " + s.esperado
+        : s.warning ? s.warning
+        : "Nenhuma feição encontrada. Esperado: " + s.esperado;
       item.appendChild(hint);
     }
     summaryEl.appendChild(item);

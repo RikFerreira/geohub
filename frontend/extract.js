@@ -6,6 +6,16 @@
 // schemas, so their extractors live in separate files and stay conceptually apart.
 const EXTRACTORS = [...SES_EXTRACTORS, ...SAA_EXTRACTORS];
 
+// "table|column" -> tipo_est of the structure that takes every element of that
+// group when the discriminator column is missing (its defaultWhenMissing entry).
+// Used to name the fallback type in the warning shown on the sibling structures.
+const DEFAULT_STRUCTURE = {};
+for (const e of EXTRACTORS) {
+  if (e.discriminator && e.defaultWhenMissing) {
+    DEFAULT_STRUCTURE[`${e.discriminator.table}|${e.discriminator.column}`] = e.tipo_est;
+  }
+}
+
 // --- tiny sql.js helpers ---------------------------------------------------
 
 // Run a query, return rows as an array of {column: value} objects.
@@ -70,14 +80,12 @@ function loadActiveIds(db, base, activeAlt) {
 }
 
 // --- Ação/Situação (raw code) ---------------------------------------------
-// The "action" is a user-defined field whose NAME varies by model (Bragança:
-// "Ação"; most others: "Situação") and whose integer code MEANING also varies
-// (0 and 2 are swapped between models). We emit the raw code as stored — the
-// legend is not applied here, on purpose. Field lives in the element's
-// <ElementTable>_HMIUserDefinedExtensions_Data, keyed per alternative, so GROUP
-// BY the element id and take any non-null value.
-// SAA uses "Ação"/"Situação"; SES uses "ACAO_FICHA_TPF"/"situacao".
-const ACAO_COLUMNS = ["Ação", "Situação", "ACAO_FICHA_TPF", "situacao"];
+// The "action" is the user-defined `Situacao` field. We emit the raw integer code
+// as stored — the legend is not applied here, on purpose. The field lives in the
+// element's <ElementTable>_HMIUserDefinedExtensions_Data, keyed per alternative, so
+// GROUP BY the element id and take any non-null value. SAA stores it as "Situacao",
+// SES as lowercase "situacao"; findColumn is case-sensitive, so list both.
+const ACAO_COLUMNS = ["Situacao", "situacao"];
 
 // First name from `candidates` that exists in `table`, or null (also null when
 // the table itself is missing).
@@ -109,7 +117,7 @@ function loadAcao(db, elementTable) {
 // the element's *_Physical_Data. The backend picks commercial first, else physical.
 // Both looked up resiliently (missing table/column -> no value), since the
 // commercial column is absent in some models and would otherwise break the query.
-const DIAM_COM_COLUMNS = ["Diâmetro_Comercial", "DIAMETRO_COMERCIAL"];
+const DIAM_COM_COLUMNS = ["Diâmetro_Comercial", "Diametro_Comercial", "DIAMETRO_COMERCIAL"];
 const PHYS_DIAM = {
   IdahoPipe:    ["IdahoPipe_Physical_Data", "Physical_PipeDiameter"],
   Conduit:      ["Conduit_Physical_Data", "ConduitDiameter"],
@@ -180,19 +188,43 @@ function extractNetwork(db, scenarioId, network) {
   for (const extractor of EXTRACTORS) {
     if (extractor.network !== network) continue;
 
-    // Each extractor is isolated. A broken query — e.g. a user-defined column
-    // this model doesn't have (Classe_Macro) — is recorded as an error and left
+    // Each extractor is isolated. A broken query is recorded as an error and left
     // with an empty collection so every other structure still comes through.
     try {
-      let rows = query(db, extractor.sql);
+      // Discriminator fallback: if the classifying column is absent from this model,
+      // the element's default structure takes every element of that type (+ warning),
+      // and the element's other structures come back empty (+ warning).
+      let warning = null;
+      let sql = extractor.sql;
+      if (extractor.discriminator &&
+          !findColumn(db, extractor.discriminator.table, [extractor.discriminator.column])) {
+        const col = extractor.discriminator.column;
+        if (extractor.defaultWhenMissing) {
+          sql = extractor.fallbackSql;
+          warning = `Campo '${col}' ausente no modelo — todas as feições foram classificadas como '${extractor.tipo_est}'.`;
+        } else {
+          sql = null;  // structure stays empty
+          const def = DEFAULT_STRUCTURE[`${extractor.discriminator.table}|${col}`];
+          warning = def
+            ? `Campo '${col}' ausente no modelo — feições classificadas como ${def}; esta estrutura ficou vazia.`
+            : `Campo '${col}' ausente no modelo — esta estrutura ficou vazia.`;
+        }
+      }
+
+      let rows = sql ? query(db, sql) : [];
       if (extractor.activeOnly) rows = rows.filter(r => activeFor(extractor.base).has(r.id));
       if (extractor.transform) rows = extractor.transform(rows);
 
-      // Element table (for the Ação/Situação and diameter lookups) = the FROM
-      // table aliased `e`.
-      const elementTable = extractor.elementTable || (/FROM\s+(\w+)\s+e\b/i.exec(extractor.sql) || [])[1];
-      const acaoMap = elementTable ? acaoFor(elementTable) : new Map();
-      const diameterMap = elementTable ? diameterFor(elementTable) : new Map();
+      // Element table(s) for the Situação/diameter lookups = the FROM table(s)
+      // aliased `e`. `elementTables` lets a structure span more than one table.
+      const elementTables = extractor.elementTables ||
+        [extractor.elementTable || (/FROM\s+(\w+)\s+e\b/i.exec(extractor.sql) || [])[1]].filter(Boolean);
+      const acaoMap = new Map();
+      const diameterMap = new Map();
+      for (const t of elementTables) {
+        for (const [id, v] of acaoFor(t)) acaoMap.set(id, v);
+        for (const [id, v] of diameterFor(t)) diameterMap.set(id, v);
+      }
 
       const geometry = geometryFor(extractor.base);
       const features = [];
@@ -214,10 +246,10 @@ function extractNetwork(db, scenarioId, network) {
         });
       }
       output[extractor.key] = { type: "FeatureCollection", features };
-      summary.push({ key: extractor.key, esperado: extractor.esperado, count: features.length, error: null });
+      summary.push({ key: extractor.key, esperado: extractor.esperado, count: features.length, error: null, warning });
     } catch (err) {
       output[extractor.key] = { type: "FeatureCollection", features: [] };
-      summary.push({ key: extractor.key, esperado: extractor.esperado, count: 0, error: err.message });
+      summary.push({ key: extractor.key, esperado: extractor.esperado, count: 0, error: err.message, warning: null });
       console.warn(`Extrator ${extractor.key} falhou: ${err.message}`);
     }
   }
