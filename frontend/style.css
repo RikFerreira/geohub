@@ -217,6 +217,13 @@ button {
 button:hover { filter: brightness(1.07); }
 button:active { filter: brightness(0.95); }
 
+/* documentation section */
+.docs { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+.docs-title { margin: 0 0 6px; font-size: 1rem; }
+.docs-desc { margin: 0 0 14px; color: var(--muted); font-size: 0.9rem; }
+.docs-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.docs-links .doc-link { margin-top: 0; }
+
 /* download link (secondary action) */
 .doc-link {
   display: inline-block;
